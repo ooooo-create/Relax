@@ -6,11 +6,11 @@
 
 ### 1. 设置开发环境
 
-创建虚拟环境并安装依赖：
+先将 [redai-studio/Relax](https://github.com/redai-studio/Relax) **Fork** 到自己的账号，再执行以下命令（将 `<your_user_name>` 替换为您的 GitHub 用户名）：
 
 ```bash
-# 克隆仓库
-git clone https://github.com/redai-studio/Relax.git
+# 克隆自己的 fork
+git clone https://github.com/<your_user_name>/Relax.git
 cd Relax
 
 # 创建虚拟环境
@@ -22,6 +22,9 @@ pip install -r requirements.txt
 
 # 以开发模式安装
 pip install -e .
+
+# 安装 pre-commit
+pip install pre-commit
 ```
 
 ### 2. 启动 Ray 并部署服务
@@ -77,17 +80,11 @@ pytest tests/utils/test_metrics_service.py
 pytest --cov=relax tests/
 ```
 
-### 4. 格式化代码
+### 4. 格式化与静态检查
 
 ```bash
-# 使用 black 格式化
-black relax/
-
-# 排序导入
-isort relax/
-
-# 运行 linter
-flake8 relax/
+# 运行 pre-commit 检查（lint + 格式化）
+pre-commit run --all-files
 ```
 
 ### 5. 提交更改
@@ -117,9 +114,9 @@ git commit -m "fix: resolve bug in metrics service"
 ```bash
 # 推送到您的 fork
 git push origin feature/your-feature-name
-
-# 在 GitHub 上创建 pull request
 ```
+
+在 GitHub 上，从您 fork 中的开发分支向 `redai-studio/Relax` 的 `main` 分支提交 PR，并填写 PR 模板。
 
 ## 代码风格指南
 

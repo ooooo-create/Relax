@@ -40,9 +40,11 @@ This project follows a standard code of conduct. Please be respectful, inclusive
 
 ## Development Setup
 
+**Fork** [redai-studio/Relax](https://github.com/redai-studio/Relax) to your account, then run the following commands (replace `<your_user_name>` with your GitHub username):
+
 ```bash
-# Clone the repository
-git clone https://github.com/redai-studio/Relax.git
+# Clone your fork
+git clone https://github.com/<your_user_name>/Relax.git
 cd Relax
 
 # Create virtual environment (recommended)
@@ -54,6 +56,9 @@ pip install -r requirements.txt
 
 # Install in development mode
 pip install -e .
+
+# Install pre-commit
+pip install pre-commit
 ```
 
 ## Development Workflow
@@ -89,7 +94,13 @@ pytest tests/
 
 ### 4. Submit a Pull Request
 
-Push your branch and open a PR against `main`. Fill out the PR template completely.
+Push your branch to your fork:
+
+```bash
+git push origin feature/your-feature-name
+```
+
+On GitHub, open a PR from your branch in your fork to `main` in `redai-studio/Relax` and fill out the PR template.
 
 ## Code Style
 

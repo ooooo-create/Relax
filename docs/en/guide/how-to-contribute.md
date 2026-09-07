@@ -6,11 +6,11 @@ Thank you for your interest in contributing to Relax! This guide will help you g
 
 ### 1. Set Up Development Environment
 
-Create a virtual environment and install dependencies:
+**Fork** [redai-studio/Relax](https://github.com/redai-studio/Relax) to your account, then run the following commands (replace `<your_user_name>` with your GitHub username):
 
 ```bash
-# Clone the repository
-git clone https://github.com/redai-studio/Relax.git
+# Clone your fork
+git clone https://github.com/<your_user_name>/Relax.git
 cd Relax
 
 # Create virtual environment
@@ -22,6 +22,9 @@ pip install -r requirements.txt
 
 # Install in development mode
 pip install -e .
+
+# Install pre-commit
+pip install pre-commit
 ```
 
 ### 2. Start Ray and Deploy Services
@@ -77,17 +80,11 @@ pytest tests/utils/test_metrics_service.py
 pytest --cov=relax tests/
 ```
 
-### 4. Format Code
+### 4. Format and Lint Code
 
 ```bash
-# Format with black
-black relax/
-
-# Sort imports
-isort relax/
-
-# Run linter
-flake8 relax/
+# Run pre-commit checks (lint + format)
+pre-commit run --all-files
 ```
 
 ### 5. Commit Changes
@@ -117,9 +114,9 @@ Follow [Conventional Commits](https://www.conventionalcommits.org/):
 ```bash
 # Push to your fork
 git push origin feature/your-feature-name
-
-# Create pull request on GitHub
 ```
+
+On GitHub, open a PR from your branch in your fork to `main` in `redai-studio/Relax` and fill out the PR template.
 
 ## Code Style Guidelines
 
