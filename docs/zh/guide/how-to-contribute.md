@@ -20,22 +20,40 @@ git pull upstream main
 
 `origin` 指向你的 fork，`upstream` 指向 Relax 主仓库。后续贡献前，切回本地 `main` 并拉取上游更新，再创建工作分支。请在工作分支上开发，保持本地 `main` 用于同步主线。
 
-### 2. 准备开发
+### 2. 设置开发环境
+
+环境要求见[安装指南](./installation.md)。
+
+```bash
+# 创建虚拟环境
+python -m venv .venv
+source .venv/bin/activate
+
+# 安装依赖
+pip install -r requirements.txt
+
+# 以开发模式安装
+pip install -e .
+```
+
+### 3. 运行示例实验
+
+```bash
+# 运行基础示例
+python relax/entrypoints/train.py
+
+# 运行 DeepEyes 示例
+cd examples/deepeyes
+bash run_deepeyes.sh
+```
+
+### 4. 开始开发
 
 ```bash
 git checkout -b feature/your-change
 ```
 
-代码开发环境的配置请参考[安装指南](./installation.md)。文档开发请参考下方[文档指南](#文档指南)。
-
-安装 Git hooks 时，以下两种工具任选其一。推荐使用 [prek](https://prek.j178.dev/quickstart/)，CI 也使用该工具：
-
-```bash
-pip install prek
-prek install
-```
-
-也可以使用 pre-commit，两者读取同一份 `.pre-commit-config.yaml`：
+安装 pre-commit 和 Git hooks：
 
 ```bash
 pip install pre-commit
@@ -44,15 +62,22 @@ pre-commit install
 
 安装后，每次 `git commit` 都会自动运行检查。
 
-### 3. 执行单元测试
+### 5. 执行单元测试
 
-完成代码修改后，为新增或修复的行为补充测试，并运行与改动相关的单元测试。例如，修改 `MetricsClient` 后：
+完成代码修改后，为新增或修复的行为补充测试，并根据改动选择测试范围：
 
 ```bash
-pytest tests/utils/test_metrics_service.py::TestMetricsClient
+# 运行所有测试
+pytest tests/
+
+# 运行特定测试文件
+pytest tests/utils/test_metrics_service.py
+
+# 带覆盖率运行
+pytest --cov=relax tests/
 ```
 
-### 4. 提交更改
+### 6. 提交更改
 
 完成相应验证后，先查看改动，再暂存本次准备提交的文件（将 `<changed-files>` 替换为实际路径，多个路径用空格分隔）：
 
@@ -75,7 +100,7 @@ git commit -m "feat: describe your change"
 - `test:` - 添加或更新测试
 - `chore:` - 维护任务
 
-### 5. 创建 PR
+### 7. 创建 PR
 
 ```bash
 git push origin feature/your-change
@@ -142,14 +167,6 @@ def test_metrics_client_log_metric():
     
     # 验证
     assert client.get_buffered_metrics_count(step=1) == 1
-```
-
-### 运行测试
-
-优先运行与改动相关的测试，例如：
-
-```bash
-pytest tests/utils/test_metrics_service.py
 ```
 
 ### 测试覆盖率
@@ -236,7 +253,7 @@ make docs-preview
 - 对他人友善和尊重
 - 欢迎新人
 - 提供建设性反馈
-- 假定善意
+- 心怀善意
 
 ### 寻求帮助
 
@@ -290,7 +307,7 @@ make docs-preview
 
 ## 许可证
 
-通过为 Relax 做出贡献，你同意你的贡献将根据 Apache 2.0 许可证授权。
+你贡献的代码和文档将按 Apache 2.0 开源许可证发布。
 
 ## 感谢！
 

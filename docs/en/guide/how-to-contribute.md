@@ -20,22 +20,40 @@ git pull upstream main
 
 `origin` points to your fork, and `upstream` points to the Relax repository. For subsequent contributions, switch to your local `main` and pull upstream updates before creating a working branch. Develop on working branches and keep your local `main` for syncing with upstream.
 
-### 2. Set Up for Development
+### 2. Set Up the Development Environment
+
+See the [installation guide](./installation.md) for environment requirements.
+
+```bash
+# Create a virtual environment
+python -m venv .venv
+source .venv/bin/activate
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Install in development mode
+pip install -e .
+```
+
+### 3. Run Example Experiment
+
+```bash
+# Run basic example
+python relax/entrypoints/train.py
+
+# Run DeepEyes example
+cd examples/deepeyes
+bash run_deepeyes.sh
+```
+
+### 4. Start Developing
 
 ```bash
 git checkout -b feature/your-change
 ```
 
-For code development, follow the [installation guide](./installation.md) to set up your environment. For documentation, see [Documentation Guidelines](#documentation-guidelines) below.
-
-Choose one of the following tools to install Git hooks. We recommend [prek](https://prek.j178.dev/quickstart/), which is also used in CI:
-
-```bash
-pip install prek
-prek install
-```
-
-Alternatively, use pre-commit. Both tools read the same `.pre-commit-config.yaml`:
+Install pre-commit and Git hooks:
 
 ```bash
 pip install pre-commit
@@ -44,15 +62,22 @@ pre-commit install
 
 Once installed, checks run automatically on each `git commit`.
 
-### 3. Run Unit Tests
+### 5. Run Unit Tests
 
-After changing the code, add tests for new or fixed behavior and run the unit tests relevant to your changes. For example, after changing `MetricsClient`:
+After changing the code, add tests for new or fixed behavior and choose the test scope appropriate for your changes:
 
 ```bash
-pytest tests/utils/test_metrics_service.py::TestMetricsClient
+# Run all tests
+pytest tests/
+
+# Run a specific test file
+pytest tests/utils/test_metrics_service.py
+
+# Run with coverage
+pytest --cov=relax tests/
 ```
 
-### 4. Commit Changes
+### 6. Commit Changes
 
 After completing the relevant validation, review your changes and stage the files you intend to commit. Replace `<changed-files>` with actual paths, separated by spaces:
 
@@ -75,7 +100,7 @@ Follow [Conventional Commits](https://www.conventionalcommits.org/) for commit m
 - `test:` - Adding or updating tests
 - `chore:` - Maintenance tasks
 
-### 5. Open a PR
+### 7. Open a PR
 
 ```bash
 git push origin feature/your-change
@@ -144,14 +169,6 @@ def test_metrics_client_log_metric():
     assert client.get_buffered_metrics_count(step=1) == 1
 ```
 
-### Running Tests
-
-Run the tests relevant to your changes first, for example:
-
-```bash
-pytest tests/utils/test_metrics_service.py
-```
-
 ### Test Coverage
 
 - Aim for >80% code coverage
@@ -162,7 +179,7 @@ pytest tests/utils/test_metrics_service.py
 
 ### Adding Documentation
 
-1. Add markdown files to  `docs/en/guide/` or `docs/zh/guide/`
+1. Add markdown files to `docs/en/guide/` or `docs/zh/guide/`
 2. Update `docs/.vitepress/config.mts` to add to sidebar
 3. Include code examples and diagrams
 4. Provide both English and Chinese versions
