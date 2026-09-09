@@ -8,13 +8,13 @@ Thank you for your interest in contributing to Relax! This document provides gui
 
 - [Code of Conduct](#code-of-conduct)
 - [How Can I Contribute?](#how-can-i-contribute)
-- [Development Setup](#development-setup)
-- [Development Workflow](#development-workflow)
+- [Developing](#developing)
 - [Code Style](#code-style)
 - [Commit Conventions](#commit-conventions)
 - [Pull Request Process](#pull-request-process)
 - [Reporting Bugs](#reporting-bugs)
 - [Requesting Features](#requesting-features)
+- [Community](#community)
 - [License](#license)
 
 ## Code of Conduct
@@ -38,69 +38,15 @@ This project follows a standard code of conduct. Please be respectful, inclusive
 - **Examples** — Add new training examples or tutorials
 - **Testing** — Improve test coverage and add integration tests
 
-## Development Setup
+## Developing
 
-**Fork** [redai-studio/Relax](https://github.com/redai-studio/Relax) to your account, then run the following commands (replace `<your_user_name>` with your GitHub username):
+Follow the [development workflow](docs/en/guide/how-to-contribute.md#developing) for step-by-step commands:
 
-```bash
-# Clone your fork
-git clone https://github.com/<your_user_name>/Relax.git
-cd Relax
-
-# Create virtual environment (recommended)
-python -m venv .venv
-source .venv/bin/activate
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Install in development mode
-pip install -e .
-
-# Install pre-commit
-pip install pre-commit
-```
-
-## Development Workflow
-
-### 1. Create a Branch
-
-```bash
-# Feature
-git checkout -b feature/your-feature-name
-
-# Bug fix
-git checkout -b fix/your-bug-fix
-
-# Documentation
-git checkout -b docs/your-doc-change
-```
-
-### 2. Make Changes
-
-- Follow existing code patterns and conventions
-- Add or update tests for your changes
-- Update documentation if applicable (both English and Chinese)
-
-### 3. Validate
-
-```bash
-# Run pre-commit checks (lint + format)
-pre-commit run --all-files
-
-# Run tests
-pytest tests/
-```
-
-### 4. Submit a Pull Request
-
-Push your branch to your fork:
-
-```bash
-git push origin feature/your-feature-name
-```
-
-On GitHub, open a PR from your branch in your fork to `main` in `redai-studio/Relax` and fill out the PR template.
+1. Fork and clone the repository, add `upstream`, and sync your local `main`.
+2. Create a working branch, set up your environment, and install Git hooks with either prek (recommended) or pre-commit.
+3. Make your changes, add or update tests, and run the relevant unit tests. Update both language versions of the documentation when needed.
+4. Review, stage, and commit your changes using [Conventional Commits](#commit-conventions). Git hooks run automatically on commit; review any fixes and stage them again before retrying.
+5. Push your working branch to your fork and open a PR targeting `redai-studio/Relax`'s `main` branch. Fill out the [PR template](.github/PULL_REQUEST_TEMPLATE.md).
 
 ## Code Style
 
@@ -144,11 +90,11 @@ feat(rollout): add streaming data consumption for async mode
 
 ### Before Submitting
 
-- [ ] Code compiles and runs without errors
-- [ ] `pre-commit run --all-files` passes
-- [ ] Tests pass (`pytest tests/`)
+- [ ] Relevant tests pass locally
+- [ ] Git hooks pass and code is formatted
 - [ ] Documentation updated (if applicable)
 - [ ] Commit messages follow Conventional Commits
+- [ ] Branch is up to date with `main`
 
 ### PR Review
 
@@ -160,7 +106,7 @@ feat(rollout): add streaming data consumption for async mode
 ### Tips for a Good PR
 
 - Keep PRs focused and reasonably sized
-- Provide a clear description of **what**, **why**, and **how**
+- Provide a clear description of **what**, **why**, **how**, and **testing**
 - Link related issues (e.g., `Fixes #123`)
 - Add screenshots or logs for UI or behavior changes
 
