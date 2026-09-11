@@ -66,9 +66,9 @@ SGLang per-position top-K log-prob transfer optimization (Qwen3-4B, simulated da
 
 ### Text OPD
 
-| Script                                                                                                   | Description                                                                                                                                   |
-| -------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`math_opd/run-opd-qwen35-35B-A3B-8xgpu-colocate.sh`](math_opd/run-opd-qwen35-35B-A3B-8xgpu-colocate.sh) | Math OPD, student: Qwen3.5-35B-A3B; teacher: Qwen3.5-35B-A3B-GRPO-dapomath17k-400step; `student_sampled` + adv + `reverse_kl`, 8 GPU colocate |
+| Script                                                                                                   | Description                                                                                                                         |
+| -------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| [`math_opd/run-opd-qwen35-35B-A3B-8xgpu-colocate.sh`](math_opd/run-opd-qwen35-35B-A3B-8xgpu-colocate.sh) | Math OPD, student: Qwen3.5-35B-A3B; teacher: Qwen3.5-35B-A3B-GRPO-dapomath17k-400step; `student_sampled` + adv mode, 8 GPU colocate |
 
 ### Multimodal OPD
 
