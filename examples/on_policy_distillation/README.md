@@ -80,7 +80,7 @@ SGLang per-position top-K log-prob transfer optimization (Qwen3-4B, simulated da
 
 ## Common Combinations
 
-Based on [`math_opd/run-opd-qwen35-35B-A3B-8xgpu-colocate.sh`](math_opd/run-opd-qwen35-35B-A3B-8xgpu-colocate.sh), edit the corresponding flags in `OPD_ARGS` to switch modes. The variables below are illustrative: map `OPD_KL_COEF`, `OPD_LOSS_COEF`, `OPD_TOKEN_SELECTION`, and `OPD_KL_TYPE` to `--opd-kl-coef`, `--opd-loss-coef`, `--opd-token-selection`, and `--opd-kl-type`, respectively. The script does not read these variables automatically:
+Based on [`math_opd/run-opd-qwen35-35B-A3B-8xgpu-colocate.sh`](math_opd/run-opd-qwen35-35B-A3B-8xgpu-colocate.sh), modify key variables to switch modes:
 
 > **KL type note**: `student_sampled` supports only `reverse_kl` and `low_var_kl`; `student_topk`, `teacher_topk`, and `union` support `reverse_kl`, `forward_kl`, and `jsd` (set via `--opd-kl-type`; `jsd` can be tuned with `--opd-jsd-alpha`).
 
