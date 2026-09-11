@@ -185,7 +185,7 @@ Relax ships two reference recipes for Qwen3-30B-A3B (8-GPU colocate): **FP8 nati
 1. A BF16 HF checkpoint (e.g. `Qwen3-30B-A3B`).
 2. The Megatron patch at `docker/patch/megatron/20260506-85bced0ae.patch` applied (baked into the project Dockerfile). It provides both the FP8 overrides and the INT4 `_FakeInt4QuantizationSTE` that overrides `TEGroupedLinear._get_weight_tensors()`.
 
-The FP8 recipe additionally needs a TransformerEngine build with FP8 blockwise scaling support. The INT4 recipe additionally needs the `fake_int4_quant_cuda` CUDA extension built — see [Build the int4_qat kernel](#build-the-int4-qat-kernel) below.
+The FP8 recipe additionally needs a TransformerEngine build with FP8 blockwise scaling support. The INT4 recipe additionally needs the `fake_int4_quant_cuda` CUDA extension built — see [Build the int4_qat kernel](#build-the-int4_qat-kernel) below.
 
 ### FP8 Recipe
 
@@ -331,5 +331,5 @@ Do not swap `--sglang-hf-checkpoint` to the BF16 cast for "consistency". SGLang'
 :::
 
 ::: tip
-This recipe assumes the W4A16 release was produced with **symmetric** quantization (matching the training-side STE). If you regenerate the W4A16 from BF16 via `convert_hf_to_int4.py`, always pass `--is-symmetric` — see the warning in the [Offline Quantization Tools](#convert_hf_to_int4-py) section above.
+This recipe assumes the W4A16 release was produced with **symmetric** quantization (matching the training-side STE). If you regenerate the W4A16 from BF16 via `convert_hf_to_int4.py`, always pass `--is-symmetric` — see the warning in the [Offline Quantization Tools](#convert_hf_to_int4py) section above.
 :::

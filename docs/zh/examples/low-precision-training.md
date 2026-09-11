@@ -114,7 +114,7 @@ FP8 训练工作流下通常 **不需要** 这个脚本 — bridge 模式（`--m
 
 ### `convert_hf_to_int4.py`
 
-把 BF16 的 HF checkpoint 量化为 W4A16（compressed-tensors）。依赖 `fake_int4_quant_cuda` kernel，需先编译（见 [编译 int4_qat kernel](#编译-int4-qat-kernel)）。
+把 BF16 的 HF checkpoint 量化为 W4A16（compressed-tensors）。依赖 `fake_int4_quant_cuda` kernel，需先编译（见 [编译 int4_qat kernel](#编译-int4_qat-kernel)）。
 
 ```bash
 python scripts/tools/convert_hf_to_int4.py \
@@ -185,7 +185,7 @@ Relax 在 Qwen3-30B-A3B（8 卡 colocate）上提供两条参考配方：**FP8 �
 1. 一个 BF16 HF checkpoint（例如 `Qwen3-30B-A3B`）。
 2. 应用 Megatron patch `docker/patch/megatron/20260506-85bced0ae.patch`（项目 Dockerfile 已自动应用）—— 该 patch 同时提供 FP8 配套的 override 与 INT4 假量化的 `_FakeInt4QuantizationSTE`（override 了 `TEGroupedLinear._get_weight_tensors()`）。
 
-FP8 配方额外需要一个支持 FP8 blockwise scaling 的 TransformerEngine 构建；INT4 配方额外需要编译 `fake_int4_quant_cuda` CUDA 扩展，见下文 [编译 int4_qat kernel](#编译-int4-qat-kernel)。
+FP8 配方额外需要一个支持 FP8 blockwise scaling 的 TransformerEngine 构建；INT4 配方额外需要编译 `fake_int4_quant_cuda` CUDA 扩展，见下文 [编译 int4_qat kernel](#编译-int4_qat-kernel)。
 
 ### FP8 低精度训练
 
@@ -329,5 +329,5 @@ bash scripts/entrypoint/ray-job.sh scripts/training/multimodal/run-kimi-k2.6-256
 :::
 
 ::: tip
-这个配方假设 W4A16 发布版是用**对称量化**生成的（与训练侧 STE 对齐）。如果你从 BF16 出发用 `convert_hf_to_int4.py` 重新生成 W4A16，必须带上 `--is-symmetric` —— 详见上文 [离线量化工具](#convert_hf_to_int4-py) 的 warning。
+这个配方假设 W4A16 发布版是用**对称量化**生成的（与训练侧 STE 对齐）。如果你从 BF16 出发用 `convert_hf_to_int4.py` 重新生成 W4A16，必须带上 `--is-symmetric` —— 详见上文 [离线量化工具](#convert_hf_to_int4py) 的 warning。
 :::
