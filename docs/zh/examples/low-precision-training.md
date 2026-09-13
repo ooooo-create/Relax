@@ -112,9 +112,7 @@ python scripts/tools/convert_fp8_to_bf16.py \
 FP8 训练工作流下通常 **不需要** 这个脚本 — bridge 模式（`--megatron-to-hf-mode bridge`）会直接读取 FP8 HF。此工具用于离线转换：当你需要把 FP8 checkpoint 转回 BF16 HF 作为其他流水线的输入时（例如作为另一份配方的 `--ref-load`，或喂给 `convert_hf_to_int4.py`）。
 :::
 
-<a id="convert-hf-to-int4"></a>
-
-### `convert_hf_to_int4.py`
+### `convert_hf_to_int4.py` {#convert-hf-to-int4}
 
 把 BF16 的 HF checkpoint 量化为 W4A16（compressed-tensors）。依赖 `fake_int4_quant_cuda` kernel，需先编译（见 [编译 int4_qat kernel](#build-int4-qat-kernel)）。
 
@@ -218,9 +216,7 @@ FP8 配方额外需要一个支持 FP8 blockwise scaling 的 TransformerEngine �
 
 ### INT4 低精度训练
 
-<a id="build-int4-qat-kernel"></a>
-
-#### 编译 int4_qat kernel
+#### 编译 int4_qat kernel {#build-int4-qat-kernel}
 
 ```bash
 cd relax/backends/megatron/kernels/int4_qat

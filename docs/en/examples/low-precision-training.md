@@ -112,9 +112,7 @@ Output:
 For the FP8 training workflow you usually do **not** need this script — bridge mode (`--megatron-to-hf-mode bridge`) reads the FP8 HF directly. This tool is for offline conversion when you need a BF16 HF as input to a different pipeline (e.g. as a `--ref-load` source for another recipe, or to feed `convert_hf_to_int4.py`).
 :::
 
-<a id="convert-hf-to-int4"></a>
-
-### `convert_hf_to_int4.py`
+### `convert_hf_to_int4.py` {#convert-hf-to-int4}
 
 Quantize a BF16 HF checkpoint to W4A16 (compressed-tensors). Uses the `fake_int4_quant_cuda` kernel, which must be built first (see [Build the int4_qat kernel](#build-int4-qat-kernel)).
 
@@ -219,9 +217,7 @@ The FP8 recipe additionally needs a TransformerEngine build with FP8 blockwise s
 
 ### INT4 fake-QAT Recipe
 
-<a id="build-int4-qat-kernel"></a>
-
-#### Build the int4_qat kernel
+#### Build the int4_qat kernel {#build-int4-qat-kernel}
 
 ```bash
 cd relax/backends/megatron/kernels/int4_qat
