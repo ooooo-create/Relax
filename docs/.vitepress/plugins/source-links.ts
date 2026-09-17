@@ -5,15 +5,15 @@ import type { MarkdownRenderer } from 'vitepress'
 interface SourceLinksOptions {
   repo: string
   branch: string
-  /** Absolute path to the VitePress Markdown source directory. */
-  srcDir: string
+  repoRoot: string
+  docsRoot: string
 }
 
-/** Link repository files to GitHub; the VitePress source directory sits directly inside the repo. */
+/** Link repository files outside the documentation source directory to GitHub. */
 export default function sourceLinks(md: MarkdownRenderer, options: SourceLinksOptions): void {
-  const { repo, branch, srcDir } = options
-  const docsRoot = resolve(srcDir)
-  const repoRoot = dirname(docsRoot)
+  const { repo, branch } = options
+  const repoRoot = resolve(options.repoRoot)
+  const docsRoot = resolve(repoRoot, options.docsRoot)
 
   function toSourceUrl(href: string, documentPath?: string): string {
     if (!documentPath || !/^\.\.?\//.test(href)) return href
