@@ -1,36 +1,6 @@
 import taskLists from 'markdown-it-task-lists'
-import { statSync } from 'node:fs'
-import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
-import { fileURLToPath } from 'node:url'
-import { defineConfig } from 'vitepress'
-
-const repoRoot = fileURLToPath(new URL('../../', import.meta.url))
-const sourceRepo = 'https://github.com/redai-studio/Relax'
-const sourceRef = 'main'
-
-function toSourceUrl(href: string, documentPath?: string): string {
-  if (!documentPath) return href
-  if (!href.startsWith('../') && !href.startsWith('./')) return href
-
-  const [, pathname, suffix] = href.match(/^([^?#]*)(.*)$/)!
-  let targetPath: string
-  try {
-    targetPath = resolve(dirname(documentPath), decodeURIComponent(pathname))
-  } catch {
-    return href
-  }
-
-  const repoPath = relative(repoRoot, targetPath)
-  const pathParts = repoPath.split(sep)
-  if (isAbsolute(repoPath) || pathParts[0] === '..' || pathParts[0] === 'docs') return href
-
-  const targetStats = statSync(targetPath, { throwIfNoEntry: false })
-  if (!targetStats) return href
-
-  const kind = targetStats.isDirectory() ? 'tree' : 'blob'
-  const urlPath = pathParts.map(encodeURIComponent).join('/')
-  return `${sourceRepo}/${kind}/${sourceRef}/${urlPath}${suffix}`
-}
+import { defineConfig, type SiteConfig } from 'vitepress'
+import sourceLinks from './plugins/source-links'
 
 // https://vitepress.dev/reference/site-config
 export default defineConfig({
@@ -245,15 +215,14 @@ export default defineConfig({
   markdown: {
     math: true,
     config(md) {
+      // VitePress exposes its resolved config through this internal global.
+      const { srcDir } = (globalThis as typeof globalThis & { VITEPRESS_CONFIG: SiteConfig }).VITEPRESS_CONFIG
       md.use(taskLists)
-
-      const renderLink = md.renderer.rules.link_open!
-      md.renderer.rules.link_open = (tokens, index, options, env, self) => {
-        const token = tokens[index]
-        const href = token.attrGet('href')
-        if (href) token.attrSet('href', toSourceUrl(href, env.path))
-        return renderLink(tokens, index, options, env, self)
-      }
+      md.use(sourceLinks, {
+        repo: 'https://github.com/redai-studio/Relax',
+        branch: 'main',
+        srcDir
+      })
     }
   },
   
