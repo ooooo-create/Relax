@@ -40,12 +40,12 @@ This project follows a standard code of conduct. Please be respectful, inclusive
 
 ## Developing
 
-Follow the [development workflow](docs/en/guide/how-to-contribute.md#developing) for step-by-step commands:
+Follow the [development workflow](docs/en/guide/how-to-contribute.md#development-workflow) for step-by-step commands:
 
 1. Fork and clone the repository, add `upstream`, and sync your local `main`.
-2. Set up the development environment and install Relax in editable mode.
-3. Run the [DeepEyes example](docs/en/examples/deepeyes.md) to verify the training environment.
-4. Create a working branch and install Git hooks with pre-commit.
+2. Set up the development environment, install Git hooks with pre-commit, and install Relax in editable mode.
+3. If you need to validate the training environment, follow the [quick start](docs/en/guide/quick-start.md) or the [DeepEyes example](docs/en/examples/deepeyes.md).
+4. Create a working branch.
 5. Make your changes, add or update tests, and run the relevant unit tests. Update both language versions of the documentation when needed.
 6. Review, stage, and commit your changes using [Conventional Commits](#commit-conventions). Git hooks run automatically on commit; review any fixes and stage them again before retrying.
 7. Push your working branch to your fork and open a PR targeting `redai-studio/Relax`'s `main` branch. Fill out the [PR template](.github/PULL_REQUEST_TEMPLATE.md).

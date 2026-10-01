@@ -1,8 +1,19 @@
 # How to Contribute
 
-Thank you for your interest in contributing to Relax! This guide will help you get started.
+Thank you for your interest in Relax! This guide walks you through the contribution process.
 
-## Developing
+::: tip Where to Start
+
+If you would like to contribute to Relax but have not decided what to work on, explore these starting points:
+
+- [Hackathon 2nd Edition](https://github.com/redai-studio/Relax/issues/321): Browse this round's tasks, participation rules, and claim instructions. Choose an area that interests you and participate individually or as a team.
+- [Good first issue](https://github.com/redai-studio/Relax/issues?q=is%3Aissue%20is%3Aopen%20label%3A%22good%20first%20issue%22): Find introductory tasks suitable for first-time contributors to the project.
+
+Before starting, read the task description and existing discussion to understand the requirements and current progress. Claim Hackathon tasks according to the rules on the event page.
+
+:::
+
+## Development Setup
 
 ### 1. Get the Code
 
@@ -18,7 +29,7 @@ git checkout main
 git pull upstream main
 ```
 
-`origin` points to your fork, and `upstream` points to the Relax repository. For subsequent contributions, switch to your local `main` and pull upstream updates before creating a working branch. Develop on working branches and keep your local `main` for syncing with upstream.
+`origin` points to your fork, and `upstream` points to the Relax repository. Before starting a new contribution, switch to your local `main` and pull upstream updates, then create a working branch. Make your changes on working branches and keep your local `main` for syncing with upstream.
 
 ### 2. Set Up the Development Environment
 
@@ -27,42 +38,50 @@ See the [installation guide](./installation.md) for environment requirements.
 ```bash
 # Create a virtual environment
 python -m venv .venv
-source .venv/bin/activate
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
 
 # Install dependencies
 pip install -r requirements.txt
 
-# Install in development mode
+# Install pre-commit and register Git hooks
+pip install pre-commit
+pre-commit install
+
+# Install Relax in development mode
 pip install -e .
 ```
 
-### 3. Run Example Experiment
+### 3. Run an Example Experiment
+
+If you need to validate the training environment, follow the [quick start](./quick-start.md) to prepare the models and data, then run an example. For multi-turn vision-language training, see the [DeepEyes example](../examples/deepeyes.md).
+
+## Development Workflow
+
+### 1. Create a Working Branch
 
 ```bash
-# Run basic example
-python relax/entrypoints/train.py
-
-# Run DeepEyes example
-cd examples/deepeyes
-bash run_deepeyes.sh
+git checkout -b feat/your-change
 ```
 
-### 4. Start Developing
+Use a branch prefix that describes the type of change, for example:
 
-```bash
-git checkout -b feature/your-change
-```
+- `feat/`: New features
+- `fix/`: Bug fixes
+- `docs/`: Documentation updates
+- `chore/`: Maintenance tasks
 
-Install pre-commit and Git hooks:
+For other prefixes, see the commit conventions below.
 
-```bash
-pip install pre-commit
-pre-commit install
-```
+### 2. Development and Debugging
 
-Once installed, checks run automatically on each `git commit`.
+Implement your feature or fix on the working branch, following these guidelines:
 
-### 5. Run Unit Tests
+- Write clear, readable code
+- Follow the existing code style
+- Add tests for new features
+- Update documentation as needed
+
+### 3. Run Unit Tests
 
 After changing the code, add tests for new or fixed behavior and choose the test scope appropriate for your changes:
 
@@ -77,7 +96,7 @@ pytest tests/utils/test_metrics_service.py
 pytest --cov=relax tests/
 ```
 
-### 6. Commit Changes
+### 4. Commit Changes
 
 After completing the relevant validation, review your changes and stage the files you intend to commit. Replace `<changed-files>` with actual paths, separated by spaces:
 
@@ -100,15 +119,17 @@ Follow [Conventional Commits](https://www.conventionalcommits.org/) for commit m
 - `test:` - Adding or updating tests
 - `chore:` - Maintenance tasks
 
-### 7. Open a PR
+### 5. Open a PR
+
+Push your working branch to your fork:
 
 ```bash
-git push origin feature/your-change
+git push origin feat/your-change
 ```
 
-On GitHub, open a PR from your working branch in your fork to **`main` in `redai-studio/Relax`**, and fill out the [PR template](https://github.com/redai-studio/Relax/blob/main/.github/PULL_REQUEST_TEMPLATE.md). Replace the branch name in the command if you chose a different one.
+After pushing, open a PR on GitHub. Select your working branch in your fork as the source and **`main` in `redai-studio/Relax`** as the target, then fill out the [PR template](https://github.com/redai-studio/Relax/blob/main/.github/PULL_REQUEST_TEMPLATE.md).
 
-Address CI results and review feedback on the same branch, then check, commit, and push your changes. The PR updates automatically.
+Address any CI failures and review feedback on the same branch. Validate, commit, and push your changes to update the PR.
 
 ## Code Style Guidelines
 
@@ -117,7 +138,7 @@ Address CI results and review feedback on the same branch, then check, commit, a
 - Follow [PEP 8](https://pep8.org/)
 - Use type hints
 - Write docstrings for public functions
-- Keep functions focused and small
+- Give each function a single responsibility and keep its implementation concise
 
 Example:
 
@@ -128,7 +149,7 @@ def compute_reward(
     reward_type: str = "f1"
 ) -> float:
     """
-    Compute reward for a response.
+    Compute the reward score for a generated response.
     
     Args:
         response: Model's generated response
@@ -179,10 +200,10 @@ def test_metrics_client_log_metric():
 
 ### Adding Documentation
 
-1. Add markdown files to `docs/en/guide/` or `docs/zh/guide/`
-2. Update `docs/.vitepress/config.mts` to add to sidebar
+1. Add English and Chinese Markdown files to `docs/en/guide/` and `docs/zh/guide/`, respectively
+2. Update `docs/.vitepress/config.mts` to add the pages to the sidebar
 3. Include code examples and diagrams
-4. Provide both English and Chinese versions
+4. Keep both language versions consistent
 
 ### Building Documentation
 
@@ -211,12 +232,12 @@ make docs-preview
 
 ### PR Description
 
-Include:
+Explain the following in your PR description:
 
 - **What**: What changes were made
 - **Why**: Why these changes are needed
-- **How**: How the changes work
-- **Testing**: How the changes were tested
+- **How**: How the changes are implemented
+- **Testing**: What tests or other validation were performed
 
 Example:
 
@@ -238,77 +259,23 @@ Users need flexibility to define custom reward logic for their tasks
 - Verified backward compatibility
 ```
 
-## Review Process
+## Communication and Feedback
 
-1. **Automated Checks**: CI/CD runs tests and linters
-2. **Code Review**: Maintainers review code
-3. **Feedback**: Address review comments
-4. **Approval**: Get approval from maintainers
-5. **Merge**: PR is merged to main branch
+Keep discussions focused on the topic and respect different opinions. When offering criticism or suggestions, explain the specific issue and your reasoning. Be patient with contributors who are new to the project.
 
-## Community Guidelines
+### Questions and Discussions
 
-### Be Respectful
+If you run into a problem, search existing issues, PRs, and discussions to see whether someone has already found a solution. If you still need help, ask in GitHub Discussions or join the WeChat group.
 
-- Be kind and respectful to others
-- Welcome newcomers
-- Provide constructive feedback
-- Assume good intentions
+### Reporting Bugs
 
-### Ask for Help
+Briefly describe the problem in the issue title and include the following information to help others investigate and reproduce it:
 
-- Use GitHub Discussions for questions
-- Join our WeChat group
-- Check existing issues and PRs
-
-### Report Issues
-
-When reporting bugs:
-
-- Use a clear, descriptive title
-- Describe steps to reproduce
-- Include error messages and logs
-- Specify your environment (OS, Python version, etc.)
-
-## Areas to Contribute
-
-### Code
-
-- New features
-- Bug fixes
-- Performance improvements
-- Code refactoring
-
-### Documentation
-
-- Improve existing docs
-- Add new guides
-- Translate to other languages
-- Fix typos and errors
-
-### Examples
-
-- Add new examples
-- Improve existing examples
-- Add tutorials
-
-### Testing
-
-- Add new tests
-- Improve test coverage
-- Add integration tests
-
-## Getting Help
-
-- **GitHub Issues**: Report bugs and request features
-- **GitHub Discussions**: Ask questions and discuss ideas
-- **WeChat Group**: Join our community
-- **Email**: Contact maintainers
-
-## License
-
-By contributing to Relax, you agree that your contributions will be licensed under the Apache 2.0 License.
+- Steps to reproduce
+- Expected results and actual behavior
+- Error messages and relevant logs
+- Your environment, such as the operating system, Python version, and hardware configuration
 
 ## Thank You!
 
-Thank you for contributing to Relax! Your contributions help make this project better for everyone.
+Every contribution helps improve Relax. Thank you for contributing!

@@ -1,8 +1,19 @@
 # 如何贡献
 
-感谢你对 Relax 项目的关注！本指南将帮助你开始贡献。
+感谢你对 Relax 项目的关注！通过阅读本指南，你可以快速了解如何参与到 Relax 开源项目的贡献。
 
-## 开发流程
+::: tip 从哪里开始
+
+如果你想参与 Relax，但还没有确定要做什么，可以从以下入口寻找感兴趣的任务：
+
+- [第二期 Hackathon](https://github.com/redai-studio/Relax/issues/321)：查看本期任务、参与规则和认领方式，选择感兴趣的方向，单人或组队参与。
+- [Good first issue](https://github.com/redai-studio/Relax/issues?q=is%3Aissue%20is%3Aopen%20label%3A%22good%20first%20issue%22)：适合初次参与项目的贡献者，可以从这里寻找入门任务。
+
+动手前，请先阅读任务说明和已有讨论，了解任务要求及当前进展。Hackathon 任务请按活动页面中的规则认领。
+
+:::
+
+## 开发准备
 
 ### 1. 获取代码
 
@@ -18,7 +29,7 @@ git checkout main
 git pull upstream main
 ```
 
-`origin` 指向你的 fork，`upstream` 指向 Relax 主仓库。后续贡献前，切回本地 `main` 并拉取上游更新，再创建工作分支。请在工作分支上开发，保持本地 `main` 用于同步主线。
+`origin` 指向你的 fork，`upstream` 指向 Relax 主仓库。每次开始新的贡献前，先切回本地 `main` 并拉取上游更新，再创建工作分支。开发工作都在工作分支上进行，本地 `main` 只用于同步主线。
 
 ### 2. 设置开发环境
 
@@ -27,42 +38,50 @@ git pull upstream main
 ```bash
 # 创建虚拟环境
 python -m venv .venv
-source .venv/bin/activate
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
 
 # 安装依赖
 pip install -r requirements.txt
 
-# 以开发模式安装
+# 安装并启用 pre-commit 钩子
+pip install pre-commit
+pre-commit install
+
+# 以开发模式安装 Relax
 pip install -e .
 ```
 
 ### 3. 运行示例实验
 
-```bash
-# 运行基础示例
-python relax/entrypoints/train.py
+如需验证训练环境，可以按照[快速开始](./quick-start.md)准备模型和数据，再运行相应示例。多轮视觉语言训练可参考 [DeepEyes 示例](../examples/deepeyes.md)。
 
-# 运行 DeepEyes 示例
-cd examples/deepeyes
-bash run_deepeyes.sh
-```
+## 开发工作流
 
-### 4. 开始开发
+### 1. 创建工作分支
 
 ```bash
-git checkout -b feature/your-change
+git checkout -b feat/your-change
 ```
 
-安装 pre-commit 和 Git hooks：
+建议根据改动类型选择分支名前缀，例如：
 
-```bash
-pip install pre-commit
-pre-commit install
-```
+- `feat/`：新功能
+- `fix/`：Bug 修复
+- `docs/`：文档更新
+- `chore/`：维护任务
 
-安装后，每次 `git commit` 都会自动运行检查。
+其他前缀可参考下方的提交消息约定。
 
-### 5. 执行单元测试
+### 2. 开发与调试
+
+在工作分支上实现功能或修复问题，并注意以下几点：
+
+- 编写清晰、可读的代码
+- 遵循现有代码风格
+- 为新功能添加测试
+- 根据需要更新文档
+
+### 3. 运行单元测试
 
 完成代码修改后，为新增或修复的行为补充测试，并根据改动选择测试范围：
 
@@ -77,7 +96,7 @@ pytest tests/utils/test_metrics_service.py
 pytest --cov=relax tests/
 ```
 
-### 6. 提交更改
+### 4. 提交更改
 
 完成相应验证后，先查看改动，再暂存本次准备提交的文件（将 `<changed-files>` 替换为实际路径，多个路径用空格分隔）：
 
@@ -100,15 +119,17 @@ git commit -m "feat: describe your change"
 - `test:` - 添加或更新测试
 - `chore:` - 维护任务
 
-### 7. 创建 PR
+### 5. 创建 PR
+
+将工作分支推送到你的 fork：
 
 ```bash
-git push origin feature/your-change
+git push origin feat/your-change
 ```
 
-在 GitHub 上，从你 fork 中的工作分支向 **`redai-studio/Relax` 的 `main` 分支**创建 PR，并填写 [PR 模板](https://github.com/redai-studio/Relax/blob/main/.github/PULL_REQUEST_TEMPLATE.md)。如果使用了其他分支名，请相应替换命令中的名称。
+推送后，在 GitHub 上创建 PR：来源分支选择你 fork 中的工作分支，目标分支选择 **`redai-studio/Relax` 的 `main` 分支**，并填写 [PR 模板](https://github.com/redai-studio/Relax/blob/main/.github/PULL_REQUEST_TEMPLATE.md)。
 
-后续根据 CI 结果和审查意见，在同一分支修改、检查、提交并推送，PR 会自动更新。
+根据 CI 结果和审查意见，在同一分支继续修改、验证、提交并推送，PR 会自动更新。
 
 ## 代码风格指南
 
@@ -117,7 +138,7 @@ git push origin feature/your-change
 - 遵循 [PEP 8](https://pep8.org/)
 - 使用类型提示
 - 为公共函数编写文档字符串
-- 保持函数专注和简洁
+- 保持函数职责单一、实现简洁
 
 示例：
 
@@ -128,13 +149,13 @@ def compute_reward(
     reward_type: str = "f1"
 ) -> float:
     """
-    计算响应的奖励。
+    计算生成响应的奖励分数。
     
     Args:
         response: 模型生成的响应
         ground_truth: 真实数据
         reward_type: 要计算的奖励类型
-        
+
     Returns:
         0 到 1 之间的奖励分数
     """
@@ -161,17 +182,17 @@ from relax.utils.metrics.client import MetricsClient
 def test_metrics_client_log_metric():
     """测试记录指标。"""
     client = MetricsClient(service_url="http://localhost:8000/metrics")
-    
+
     # 记录指标
     client.log_metric(step=1, metric_name="test/metric", metric_value=0.5)
-    
+
     # 验证
     assert client.get_buffered_metrics_count(step=1) == 1
 ```
 
 ### 测试覆盖率
 
-- 目标 >80% 代码覆盖率
+- 以超过 80% 的代码覆盖率为目标
 - 测试边界情况和错误条件
 - 对外部依赖使用 mock
 
@@ -179,10 +200,10 @@ def test_metrics_client_log_metric():
 
 ### 添加文档
 
-1. 将 markdown 文件添加到 `docs/en/guide/` 或 `docs/zh/guide/`
-2. 更新 `docs/.vitepress/config.mts` 以添加到侧边栏
+1. 在 `docs/en/guide/` 和 `docs/zh/guide/` 中分别添加英文和中文 Markdown 文件
+2. 更新 `docs/.vitepress/config.mts`，将页面加入侧边栏
 3. 包含代码示例和图表
-4. 提供中英文两个版本
+4. 确保中英文内容一致
 
 ### 构建文档
 
@@ -211,12 +232,12 @@ make docs-preview
 
 ### PR 描述
 
-包含：
+请在 PR 描述中说明：
 
-- **What（什么）**：进行了哪些更改
-- **Why（为什么）**：为什么需要这些更改
-- **How（如何）**：更改如何工作
-- **Testing（测试）**：如何测试更改
+- **What（改动内容）**：进行了哪些更改
+- **Why（改动原因）**：为什么需要这些更改
+- **How（实现方式）**：如何实现这些更改
+- **Testing（验证方式）**：做了哪些测试或验证
 
 示例：
 
@@ -238,76 +259,22 @@ make docs-preview
 - 验证向后兼容性
 ```
 
-## 审查流程
+## 交流与反馈
 
-1. **自动检查**：CI/CD 运行测试和 linter
-2. **代码审查**：维护者审查代码
-3. **反馈**：处理审查意见
-4. **批准**：获得维护者批准
-5. **合并**：PR 合并到 main 分支
+讨论时请就事论事，尊重不同意见。提出批评或建议时，尽量说明具体问题和理由；对刚接触项目的贡献者，也请多一些耐心。
 
-## 社区指南
+### 提问与讨论
 
-### 尊重他人
+遇到问题时，可以先搜索已有的 Issue、PR 和讨论，看看是否已有解答。如果仍未解决，可以在 GitHub Discussions 中提问，或加入微信群交流。
 
-- 对他人友善和尊重
-- 欢迎新人
-- 提供建设性反馈
-- 心怀善意
+### 报告 Bug
 
-### 寻求帮助
+请在 Issue 标题中简要说明问题，并提供以下信息，方便其他人定位和复现：
 
-- 使用 GitHub Discussions 提问
-- 加入我们的微信群
-- 检查现有 issues 和 PRs
-
-### 报告问题
-
-报告 Bug 时：
-
-- 使用清晰、具有描述性的标题
-- 描述复现步骤
-- 包含错误消息和日志
-- 说明运行环境（操作系统、Python 版本等）
-
-## 贡献领域
-
-### 代码
-
-- 新功能
-- Bug 修复
-- 性能改进
-- 代码重构
-
-### 文档
-
-- 改进现有文档
-- 添加新指南
-- 翻译到其他语言
-- 修复错别字和错误
-
-### 示例
-
-- 添加新示例
-- 改进现有示例
-- 添加教程
-
-### 测试
-
-- 添加新测试
-- 提高测试覆盖率
-- 添加集成测试
-
-## 获取帮助
-
-- **GitHub Issues**：报告 bug 和请求功能
-- **GitHub Discussions**：提问和讨论想法
-- **微信群**：加入我们的社区
-- **Email**：联系维护者
-
-## 许可证
-
-你贡献的代码和文档将按 Apache 2.0 开源许可证发布。
+- 复现步骤
+- 预期结果和实际表现
+- 报错信息及相关日志
+- 运行环境，例如操作系统、Python 版本和硬件配置
 
 ## 感谢！
 
