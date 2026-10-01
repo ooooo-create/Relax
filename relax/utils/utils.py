@@ -11,11 +11,12 @@ import ray
 import torch
 from tensordict import TensorDict
 
+from relax.algorithms import get_algorithm
+from relax.algorithms.rewards import REWARD_NORMALIZERS
 from relax.utils.device import get_ray_accelerator_name
-from relax.utils.env import Envs, validate_env
+from relax.utils.env import KERNEL_CACHE_ENV_NAMES, Envs, validate_env
 from relax.utils.logging_utils import get_logger
 from relax.utils.misc import load_function
-from relax.utils.training.ppo_utils import compute_rloo_leave_one_out_rewards
 from relax.utils.types import Sample
 
 
@@ -95,10 +96,26 @@ def _extract_audio_seqlens(multimodal_train_inputs) -> list[int]:
 
 def convert_samples_to_train_data(args: Any, samples: list[Sample] | list[list[Sample]]):
     """Convert inference generated samples to training data."""
+    # Native generative RL emits a lightweight diffusion TQ row (numeric-only)
+    # via a declared hook, so the default token converter below is bypassed
+    # (design doc 8.3). When unset the standard token path runs unchanged.
+    custom_convert_path = getattr(args, "custom_convert_samples_to_train_data_path", None)
+    if custom_convert_path is not None:
+        custom_convert_func = load_function(custom_convert_path)
+        return custom_convert_func(args, samples)
+
     raw_rewards, rewards = post_process_rewards(args, samples)
 
     assert len(raw_rewards) == len(samples)
     assert len(rewards) == len(samples)
+
+    if any(isinstance(reward, list) for reward in rewards):
+        if args.advantage_estimator not in ("grpo", "gspo", "sapo", "cispo", "m2po", "rloo"):
+            raise ValueError(f"dense rewards are not supported for {args.advantage_estimator!r}")
+        rewards = [
+            reward if isinstance(reward, list) else [reward] * sample.response_length
+            for reward, sample in zip(rewards, samples, strict=True)
+        ]
 
     sample_indices = [sample.index for sample in samples]
     train_data = {
@@ -192,52 +209,19 @@ def post_process_rewards(args: Any, samples: list[Sample] | list[list[Sample]]):
         return raw_rewards, processed_rewards
 
     raw_rewards = [sample.get_reward_value(args) for sample in samples]
-
+    # This explicit custom-advantage hook replaces the registered reward
+    # normalizer wholesale by design.
     if getattr(args, "agentic_custom_advantage_path", None) is not None:
         return raw_rewards, [sample.custom_advantage for sample in samples]
 
-    if (
-        args.advantage_estimator in ["grpo", "gspo", "sapo", "cispo", "reinforce_plus_plus_baseline", "rloo"]
-        and args.rewards_normalization
-    ):
-        # group norm
-        rewards = torch.tensor(raw_rewards, dtype=torch.float)
-        positions_by_group: dict[int, list[int]] = {}
-        for position, sample in enumerate(samples):
-            if sample.group_index is None:
-                raise ValueError("Sample.group_index is required for group reward normalization.")
-            if sample.group_index not in positions_by_group:
-                positions_by_group[sample.group_index] = []
-            positions_by_group[sample.group_index].append(position)
+    if not args.rewards_normalization:
+        return raw_rewards, raw_rewards
 
-        normalized_rewards = torch.empty_like(rewards)
-        for group_index, positions in positions_by_group.items():
-            if len(positions) != args.n_samples_per_prompt:
-                raise ValueError(
-                    f"Reward group {group_index} has {len(positions)} samples, expected {args.n_samples_per_prompt}."
-                )
-            group_rewards = rewards[positions]
-            if args.advantage_estimator == "rloo":
-                finite_mask = torch.isfinite(group_rewards)
-                if not finite_mask.all():
-                    invalid_group_positions = (~finite_mask).nonzero(as_tuple=False).flatten().tolist()
-                    invalid_sample_positions = [positions[position] for position in invalid_group_positions]
-                    invalid_values = group_rewards[~finite_mask].tolist()
-                    raise ValueError(
-                        f"RLOO group_index={group_index} contains non-finite reward(s) at "
-                        f"group position(s) {invalid_group_positions}, sample position(s) "
-                        f"{invalid_sample_positions}: {invalid_values}."
-                    )
-                group_rewards = compute_rloo_leave_one_out_rewards(group_rewards)
-            else:
-                group_rewards = group_rewards - group_rewards.mean()
-                if args.advantage_estimator in ["grpo", "gspo", "sapo", "cispo"] and args.grpo_std_normalization:
-                    group_rewards = group_rewards / (group_rewards.std() + 1e-6)
-            normalized_rewards[positions] = group_rewards
-
-        return raw_rewards, normalized_rewards.tolist()
-
-    return raw_rewards, raw_rewards
+    # Which normalization to apply is declared by the algorithm registry rather
+    # than by a whitelist of estimator names maintained here.
+    spec = get_algorithm(args.advantage_estimator)
+    normalizer = REWARD_NORMALIZERS[spec.reward_normalizer]
+    return raw_rewards, normalizer(args, samples, raw_rewards)
 
 
 def dict_to_tensordict(
@@ -245,10 +229,11 @@ def dict_to_tensordict(
     batch_size: Union[int, torch.Size, None] = None,
     device: Optional[torch.device] = None,
 ) -> TensorDict:
-    """Convert a nested-list dictionary to a TensorDict.
+    """Convert a nested-list / tensor-list dictionary to a TensorDict.
 
     Args:
-        data: Mapping of keys to nested lists (supports depth 1 or 2).
+        data: Mapping of keys to nested lists (supports depth 1 or 2) or
+            lists of per-sample tensors.
         batch_size: Optional batch size. If None, caller may set an appropriate
             batch size (TensorDict accepts None or an int/torch.Size).
         device: Optional target torch.device for created tensors.
@@ -283,6 +268,12 @@ def dict_to_tensordict(
         tensors = [torch.tensor(seq, dtype=dtype, device=device) for seq in lst]
         return torch.nested.as_nested_tensor(tensors, layout=torch.jagged)
 
+    def _to_nested_tensor_from_tensor_list(lst):
+        if not all(isinstance(item, torch.Tensor) for item in lst):
+            raise TypeError("Mixed tensor and non-tensor values are not supported")
+        tensors = [tensor.to(device=device) for tensor in lst] if device is not None else lst
+        return torch.nested.as_nested_tensor(tensors, layout=torch.jagged)
+
     result = {}
 
     for key, value in data.items():
@@ -310,6 +301,17 @@ def dict_to_tensordict(
             ]
             result[key] = torch.nested.as_nested_tensor(tensors, layout=torch.jagged)
             continue
+        if key == "trajectory_refs":
+            # Serialized Ray ObjectRefs are padded to a fixed width per batch.
+            # Keep them as dense uint8 so TransferQueue and the rank-0 broadcast
+            # do not pay NestedTensor metadata/serialization overhead.
+            result[key] = torch.tensor(value, dtype=torch.uint8, device=device)
+            continue
+
+        if value and isinstance(value[0], torch.Tensor):
+            result[key] = _to_nested_tensor_from_tensor_list(value)
+            continue
+
         depth = _nesting_depth(value)
         if depth == 0:  # empty list []
             tensor = torch.empty(0)
@@ -409,6 +411,20 @@ def post_process_env(args, env):
     if extra_modules and "RELAX_EXTRA_MODULES" not in env["env_vars"]:
         env["env_vars"]["RELAX_EXTRA_MODULES"] = extra_modules
 
+    # Producer and consumer derive the same TransferQueue partition names from
+    # this value, so it must be identical in every Serve and Megatron actor.
+    if "RELAX_SFT_TQ_SHARDS" not in env["env_vars"]:
+        env["env_vars"]["RELAX_SFT_TQ_SHARDS"] = str(Envs.RELAX_SFT_TQ_SHARDS)
+
+    # ray-job.sh prepares the node-local cache before launching the inner Ray
+    # job. Carry its resolved session into the runtime env that Controller
+    # explicitly forwards through detached Serve deployments to TrainGroup.
+    # actor_group.py then exposes the compiler-specific paths only to training
+    # actors, so Serve/TQ workers do not write into the cache.
+    for name in KERNEL_CACHE_ENV_NAMES:
+        if name not in env["env_vars"] and (value := os.environ.get(name)) is not None:
+            env["env_vars"][name] = value
+
     # Generic env-var passthrough for overlay packages. Comma-separated list
     # of env-var names the driver wants forwarded to every Ray actor. Each
     # name is copied from the driver's os.environ; missing names are
@@ -477,7 +493,7 @@ def get_debug_data(args, rollout_id: int, batch_size, dp_rank: int) -> Dict[str,
         original_num_rows = len(data)
         if (
             args.custom_reward_post_process_path is None
-            and args.advantage_estimator in ["grpo", "gspo", "sapo", "cispo", "reinforce_plus_plus_baseline", "rloo"]
+            and get_algorithm(args.advantage_estimator).requires_complete_reward_groups
             and args.rewards_normalization
         ):
             group_ids = list(dict.fromkeys(sample.group_index for sample in data))

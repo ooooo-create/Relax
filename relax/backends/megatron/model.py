@@ -2,6 +2,7 @@
 
 import dataclasses
 import gc
+import itertools
 import math
 import os
 import string
@@ -18,7 +19,13 @@ from megatron.core.distributed import DistributedDataParallel as DDP
 from megatron.core.distributed import finalize_model_grads
 from megatron.core.enums import ModelType
 from megatron.core.models.gpt import GPTModel
-from megatron.core.optimizer import OptimizerConfig, get_megatron_optimizer
+from megatron.core.optimizer import (
+    OptimizerConfig,
+    ParamKey,
+    ParamWithNamePredicate,
+    get_megatron_optimizer,
+    get_standard_config_overrides,
+)
 from megatron.core.optimizer.optimizer import MegatronOptimizer
 from megatron.core.optimizer_param_scheduler import OptimizerParamScheduler
 from megatron.core.pipeline_parallel import get_forward_backward_func
@@ -279,6 +286,83 @@ def _build_optimizer_config_kwargs(args: Namespace) -> dict[str, object]:
     return kwargs
 
 
+_VIT_PARAMETER_REGIONS = frozenset({"image_encoder", "vision_model", "vision_tower", "visual", "vit"})
+_VISION_PROJECTION_REGIONS = frozenset({"merger", "multi_modal_projector", "projector", "projection"})
+_VISION_PROJECTION_DESCENDANTS = frozenset({"deepstack_merger_list"})
+
+
+def _is_vit_parameter_name(name: str) -> bool:
+    """Return whether ``name`` belongs to the vision encoder rather than its
+    projection head."""
+    regions = name.split(".")
+    if any(region in _VISION_PROJECTION_DESCENDANTS for region in regions):
+        return False
+    for index, region in enumerate(regions):
+        if region not in _VIT_PARAMETER_REGIONS:
+            continue
+        next_region = regions[index + 1] if index + 1 < len(regions) else None
+        return next_region not in _VISION_PROJECTION_REGIONS
+    return False
+
+
+def _build_optimizer_config_overrides(args: Namespace, config: OptimizerConfig) -> dict:
+    """Build Megatron optimizer overrides, including the optional MS-Swift-
+    style ViT LR group."""
+    config_overrides = get_standard_config_overrides(config)
+    vit_lr = getattr(args, "vit_lr", None)
+    if vit_lr is None:
+        return config_overrides
+
+    if not math.isfinite(vit_lr) or vit_lr <= 0.0:
+        raise ValueError(f"--vit-lr must be a finite number greater than 0, got {vit_lr!r}.")
+    if config.lr is None or not math.isfinite(config.lr) or config.lr <= 0.0:
+        raise ValueError(f"--lr must be a finite number greater than 0 when --vit-lr is set, got {config.lr!r}.")
+    if config.min_lr is None or not math.isfinite(config.min_lr) or config.min_lr < 0.0:
+        raise ValueError(f"--min-lr must be a finite non-negative number when --vit-lr is set, got {config.min_lr!r}.")
+    lr_warmup_init = getattr(args, "lr_warmup_init", 0.0)
+    if lr_warmup_init != 0.0:
+        raise ValueError(
+            "--vit-lr currently requires --lr-warmup-init 0 so the ViT and main learning rates keep the same "
+            f"ratio throughout warmup, got {lr_warmup_init!r}."
+        )
+
+    lr_mult = vit_lr / config.lr
+    vit_parameter = ParamWithNamePredicate(
+        name="relax_vit_parameter",
+        fn=lambda _param, name: _is_vit_parameter_name(name),
+    )
+    config_overrides[ParamKey(with_name_predicate=vit_parameter)] = {
+        # Megatron also uses lr_mult as part of the stable parameter-group identity when
+        # saving and restoring optimizer state; max_lr/min_lr alone are not sufficient.
+        "lr_mult": lr_mult,
+        "max_lr": vit_lr,
+        "min_lr": config.min_lr * lr_mult,
+    }
+    return config_overrides
+
+
+def _validate_vit_lr_trainable_params(args: Namespace, model: list[DDP]) -> None:
+    """Fail fast when ``--vit-lr`` does not match a trainable parameter on any
+    rank."""
+    if getattr(args, "vit_lr", None) is None:
+        return
+
+    global_match_count = sum(
+        1
+        for model_chunk in model
+        for name, param in model_chunk.named_parameters()
+        if param.requires_grad and _is_vit_parameter_name(name)
+    )
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        first_param = next(param for model_chunk in model for param in model_chunk.parameters())
+        count = torch.tensor(global_match_count, dtype=torch.long, device=first_param.device)
+        torch.distributed.all_reduce(count, group=torch.distributed.group.WORLD)
+        global_match_count = int(count.item())
+
+    if global_match_count == 0:
+        raise RuntimeError("--vit-lr did not match any trainable vision-encoder parameters in the distributed model.")
+
+
 def setup_model_and_optimizer(
     args: Namespace,
     role: str = "actor",
@@ -302,14 +386,6 @@ def setup_model_and_optimizer(
     """
     assert not args.moe_use_upcycling
     assert args.load is not None or args.pretrained_checkpoint is not None
-
-    # Relax the Megatron GDN head-vs-(tp*cp) config gate down to (tp) BEFORE the model
-    # provider finalizes the TransformerConfig (get_model_provider_func below triggers
-    # __post_init__), so high-CP GDN configs (e.g. TP2/CP16) validate. The matching
-    # forward all-gather path is installed by _patch_gdn_for_dynamic_cp after the model
-    # is built; see both functions for why % tp suffices (GDN weights are TP-only).
-    if getattr(args, "dynamic_context_parallel", False) or getattr(args, "context_parallel_size", 1) > 1:
-        _relax_gdn_cp_config_assert()
 
     model = get_model(
         wrap_model_provider_with_freeze(get_model_provider_func(args, role), args),
@@ -337,6 +413,16 @@ def setup_model_and_optimizer(
         # (dynamic CP, or static context_parallel_size > 1), incl. weight-only
         # roles that still run forward.
         _patch_gdn_for_dynamic_cp()
+        model_config = get_model_config(model[0])
+        if getattr(model_config, "experimental_attention_variant", None) == "gated_delta_net" and (
+            not torch.distributed.is_initialized()
+            or torch.distributed.get_rank(group=torch.distributed.group.WORLD) == 0
+        ):
+            logger.info(
+                f"[GDN CP] role={role} linear_cp_mode={getattr(model_config, 'linear_cp_mode', None)} "
+                f"TP={model_config.tensor_model_parallel_size} max_CP={model_config.context_parallel_size} "
+                f"key_heads={model_config.linear_num_key_heads} value_heads={model_config.linear_num_value_heads}"
+            )
 
     if args.only_load_weight:
         return model, None, None
@@ -344,29 +430,36 @@ def setup_model_and_optimizer(
     kwargs = _build_optimizer_config_kwargs(args)
     config = OptimizerConfig(**kwargs)
     config.timers = None
+    _validate_vit_lr_trainable_params(args, model)
 
     optimizer = get_megatron_optimizer(
         config=config,
         model_chunks=model,
+        config_overrides=_build_optimizer_config_overrides(args, config),
         use_gloo_process_groups=args.use_gloo_process_groups,
     )
     opt_param_scheduler = get_optimizer_param_scheduler(args, optimizer)
     return model, optimizer, opt_param_scheduler
 
 
-def _resolve_gdn_cp(self, packed_seq_params):
+def _resolve_gdn_cp(self, packed_seq_params, pg_collection=None):
     """Resolve (cp_size, cp_group, cp_rank) for a GDN forward.
 
     Prefers the per-micro-batch dynamic CP group carried on
     ``packed_seq_params`` (set in ``data.py``); falls back to the module's
     static CP group.
     """
-    if packed_seq_params is not None and getattr(packed_seq_params, "local_cp_size", None) is not None:
-        cp_group = packed_seq_params.cp_group
-        cp_size = packed_seq_params.local_cp_size
-    else:
-        cp_group = self.pg_collection.cp
-        cp_size = cp_group.size()
+    cp_group = pg_collection.cp if pg_collection is not None else self.pg_collection.cp
+    if packed_seq_params is not None:
+        dynamic_group = getattr(packed_seq_params, "cp_group", None)
+        local_cp_size = getattr(packed_seq_params, "local_cp_size", None)
+        if (dynamic_group is None) != (local_cp_size is None):
+            raise ValueError("PackedSeqParams.cp_group and local_cp_size must both be set or both be None.")
+        if dynamic_group is not None:
+            if local_cp_size != dynamic_group.size():
+                raise ValueError("PackedSeqParams.local_cp_size does not match cp_group.size().")
+            cp_group = dynamic_group
+    cp_size = cp_group.size() if cp_group is not None else 1
     cp_rank = cp_group.rank() if cp_size > 1 else 0
     return cp_size, cp_group, cp_rank
 
@@ -376,9 +469,9 @@ def _assert_gdn_full_recompute() -> None:
 
     The all-gather path below runs the recurrent scan on the *full* sequence
     duplicated on every CP rank, so the GDN activation scales with the full
-    context length. Only ``--recompute-granularity full`` (whole-layer
-    checkpointing) keeps that a per-layer transient; ``selective`` does not
-    cover GDN (its module list has no gdn/mamba entry) and silently OOMs.
+    context length. ``--recompute-granularity full`` (whole-layer checkpointing)
+    keeps that a per-layer transient. The fallback bypasses native GDN forward,
+    including its selective recompute wrapper.
 
     Only relevant to training forwards that build a graph (and thus retain
     activations): skipped when grad is disabled (weight-only / inference roles
@@ -391,11 +484,11 @@ def _assert_gdn_full_recompute() -> None:
     args = get_args()
     if getattr(args, "recompute_granularity", None) != "full":
         raise ValueError(
-            "GatedDeltaNet context-parallel (cp>1) requires whole-layer activation recompute: "
+            "GatedDeltaNet all_gather context-parallel (cp>1) requires whole-layer activation recompute: "
             "pass `--recompute-granularity full --recompute-method uniform --recompute-num-layers 1`. "
             f"Got recompute_granularity={getattr(args, 'recompute_granularity', None)!r}. "
-            "`selective` recompute does not cover GDN and will OOM (its full-sequence duplicated scan "
-            "activation stays resident)."
+            "The Relax all_gather fallback bypasses native GDN selective recompute; "
+            "its full-sequence duplicated scan activation would stay resident."
         )
     _assert_gdn_full_recompute._checked = True
 
@@ -409,84 +502,13 @@ def _gdn_cp_gather_full(qkvzba, cu_seqlens_cpu, cp_size, cp_group):
     return gdn_cp_gather_full(qkvzba, cu_seqlens_cpu, cp_size, cp_group)
 
 
-def _relax_gdn_cp_config_assert() -> None:
-    """Relax Megatron's GDN config gate ``linear_num_{key,value}_heads %
-    (tp*cp) == 0`` down to ``% tp`` so high-CP GDN configs (e.g. TP2/CP16)
-    finalize.
-
-    Megatron's ``TransformerConfig.__post_init__`` enforces the *native* cp2hp
-    (split-sequence -> split-head) divisibility ``heads % (tp * cp)``.
-    ``_patch_gdn_for_dynamic_cp`` replaces that forward with an all-gather + duplicated
-    scan whose weights stay **TP-only** (``qk_dim_local_tp = qk_dim // tp``, etc.), so
-    only ``heads % tp`` is actually required. Without relaxing this config gate, TP2/CP16
-    (16 % 32 != 0) aborts at config finalize (``get_model_provider_func`` -> ``finalize``
-    -> ``__post_init__``) *before* the forward patch is installed.
-
-    Only intervenes when the native check would reject but the relaxed ``% tp`` check
-    passes: it temporarily scales the two GDN head counts by ``cp`` (which preserves
-    ``value % key`` and makes ``heads % (tp*cp)`` hold), runs the original
-    ``__post_init__``, then restores them. Those head counts are validation-only in
-    ``__post_init__`` (no stored value is derived from them -- verified against Megatron
-    core), and ``GatedDeltaNet.__init__`` reads the restored config later, so nothing
-    downstream sees the temporary values. Idempotent; monkey-patch only (no upstream
-    edit), matching ``_patch_gdn_for_dynamic_cp``.
-    """
-    try:
-        from megatron.core.transformer.transformer_config import TransformerConfig
-    except ImportError:
-        return
-
-    if getattr(TransformerConfig, "_gdn_cp_relaxed", False):
-        return
-
-    _orig_post_init = TransformerConfig.__post_init__
-
-    def _relaxed_post_init(self, *post_init_args, **post_init_kwargs):
-        if getattr(self, "experimental_attention_variant", None) == "gated_delta_net":
-            tp = self.tensor_model_parallel_size
-            cp = self.context_parallel_size
-            key = self.linear_num_key_heads or 0
-            val = self.linear_num_value_heads or 0
-            native_bad = cp > 1 and ((key % (tp * cp)) != 0 or (val % (tp * cp)) != 0)
-            relaxed_ok = tp > 0 and (key % tp) == 0 and (val % tp) == 0
-            if native_bad and relaxed_ok:
-                # key%tp==0 => (key*cp)%(tp*cp)==0, and (val*cp)%(key*cp)==(val%key) so the
-                # value%key assert is preserved. Restored in `finally` before anything else
-                # (incl. GatedDeltaNet.__init__) reads the config.
-                self.linear_num_key_heads = key * cp
-                self.linear_num_value_heads = val * cp
-                try:
-                    _orig_post_init(self, *post_init_args, **post_init_kwargs)
-                finally:
-                    self.linear_num_key_heads = key
-                    self.linear_num_value_heads = val
-                return
-        _orig_post_init(self, *post_init_args, **post_init_kwargs)
-
-    TransformerConfig.__post_init__ = _relaxed_post_init
-    TransformerConfig._gdn_cp_relaxed = True
-
-
 def _patch_gdn_for_dynamic_cp() -> None:
-    """Monkey-patch GatedDeltaNet.forward for CP via all-gather + duplicated
-    scan.
+    """Patch GDN forward for dynamic CP and Relax's all-gather mode.
 
-    Megatron's native GDN forward implements CP by converting "split sequence"
-    into "split head" (``cp2hp`` all-to-all, ``num_value_heads // tp // cp``),
-    which forces ``num_heads % (tp * cp) == 0`` and breaks at high CP for
-    head-light models (e.g. Qwen3.5). This patch keeps that efficient native path
-    whenever the heads still divide ``tp * cp`` (``native_ok``), and only when
-    native would break does it fall back to all-gathering the full sequence across
-    CP, running the recurrent scan duplicated on each rank while keeping relax's
-    **TP** head-split intact, then re-slicing this rank's shard. The effective
-    constraint drops to ``num_heads % tp == 0`` (CP16 works), and weight
-    conversion / DCS sync / checkpoint (all TP-only) are untouched.
-
-    Dynamic CP: size/group are read per micro-batch from ``packed_seq_params``
-    (set in get_batch), falling back to the static CP group. The ``cp == 1``,
-    non-thd, and ``native_ok`` cases keep upstream behavior (swap the dynamic CP
-    group, call the original forward). Idempotent; avoids editing upstream
-    Megatron source.
+    CP=1 and MCore-native headwise/chunkwise modes call the patched MCore
+    forward directly. Only static ``linear_cp_mode='all_gather'`` with CP>1
+    executes Relax's existing fallback. No shared module/config state is
+    modified.
     """
     try:
         from megatron.core.ssm.gated_delta_net import GatedDeltaNet
@@ -498,23 +520,6 @@ def _patch_gdn_for_dynamic_cp() -> None:
 
     _orig_forward = GatedDeltaNet.forward
 
-    def _call_orig_with_dynamic_cp(
-        self, cp_size, cp_group, hidden_states, attention_mask, inference_context, packed_seq_params, *args, **kwargs
-    ):
-        # cp == 1 or non-thd: preserve upstream behavior; just point the module at
-        # the (possibly dynamic) CP group for the original forward.
-        _orig_cp_size = self.cp_size
-        _orig_cp_group = self.pg_collection.cp
-        self.cp_size = cp_size
-        self.pg_collection.cp = cp_group
-        try:
-            return _orig_forward(
-                self, hidden_states, attention_mask, inference_context, packed_seq_params, *args, **kwargs
-            )
-        finally:
-            self.cp_size = _orig_cp_size
-            self.pg_collection.cp = _orig_cp_group
-
     def _dcp_gdn_forward(
         self, hidden_states, attention_mask, inference_context=None, packed_seq_params=None, *args, **kwargs
     ):
@@ -523,27 +528,17 @@ def _patch_gdn_for_dynamic_cp() -> None:
 
         from .cp_utils import gdn_cp_slice
 
-        cp_size, cp_group, cp_rank = _resolve_gdn_cp(self, packed_seq_params)
-        is_thd = packed_seq_params is not None and getattr(packed_seq_params, "qkv_format", None) == "thd"
-        # Native cp2hp (head-split) is exact and cheaper (no duplicated scan, GDN
-        # activation sharded by CP) whenever the heads divide tp*cp. Only fall back
-        # to the all-gather path when native would break the head split — i.e. when
-        # num_key_heads is not divisible by tp*cp (covers tp*cp > num_key_heads).
-        # num_value_heads is a multiple of num_key_heads, so this one check suffices.
-        native_ok = self.num_key_heads % (self.tp_size * cp_size) == 0
-        if cp_size == 1 or not is_thd or native_ok:
-            return _call_orig_with_dynamic_cp(
-                self,
-                cp_size,
-                cp_group,
-                hidden_states,
-                attention_mask,
-                inference_context,
-                packed_seq_params,
-                *args,
-                **kwargs,
+        cp_size, cp_group, cp_rank = _resolve_gdn_cp(self, packed_seq_params, kwargs.get("pg_collection"))
+        if cp_size == 1 or self.config.linear_cp_mode != "all_gather":
+            return _orig_forward(
+                self, hidden_states, attention_mask, inference_context, packed_seq_params, *args, **kwargs
             )
 
+        is_thd = packed_seq_params is not None and getattr(packed_seq_params, "qkv_format", None) == "thd"
+        assert is_thd, (
+            "GDN linear_cp_mode='all_gather' with cp_size>1 only supports packed (thd) sequences; "
+            "use linear_cp_mode='headwise' or 'chunkwise' for SBHD/static-batch inputs."
+        )
         assert inference_context is None, "GDN all-gather CP path does not support inference."
         # Packed (thd) + deterministic is unsupported: a single conv/scan over the
         # concatenated samples would bleed state across cu_seqlens boundaries, and
@@ -556,14 +551,19 @@ def _patch_gdn_for_dynamic_cp() -> None:
         )
         _assert_gdn_full_recompute()
 
-        cu_seqlens = packed_seq_params.cu_seqlens_q
+        cu_seqlens, _ = self._resolve_thd_cu_seqlens(
+            packed_seq_params, hidden_states.shape[0] * self.sp_size * cp_size, cp_size
+        )
         # Precompute the host-side boundary list once per micro-batch (cached on the
         # shared packed_seq_params object) so the gather/slice below don't force a
         # per-GDN-layer .tolist() device sync — repeated under full recompute.
-        cu_seqlens_cpu = getattr(packed_seq_params, "_gdn_cu_seqlens_cpu", None)
-        if cu_seqlens_cpu is None:
+        cached = getattr(packed_seq_params, "_gdn_cu_seqlens_cpu", None)
+        version = None if cu_seqlens.is_inference() else cu_seqlens._version
+        if cached is not None and version is not None and cached[0] is cu_seqlens and cached[1] == version:
+            cu_seqlens_cpu = cached[2]
+        else:
             cu_seqlens_cpu = cu_seqlens.tolist()
-            packed_seq_params._gdn_cu_seqlens_cpu = cu_seqlens_cpu
+            packed_seq_params._gdn_cu_seqlens_cpu = (cu_seqlens, version, cu_seqlens_cpu)
         _, batch, _ = hidden_states.shape
 
         # Input projection on the CP-sharded (and SP-sharded) sequence.
@@ -603,19 +603,14 @@ def _patch_gdn_for_dynamic_cp() -> None:
         )
 
         # Reuse the module's own prep (split/l2norm/GQA-expand) with CP disabled so
-        # its internal `// self.cp_size` becomes a no-op. Wrap in the dynamo-disable
+        # its internal `// cp_size_headwise` becomes a no-op. Wrap in the dynamo-disable
         # guard added by docker/patch/megatron/20260506-85bced0ae.patch (Qwen3.6 GDN
         # torch.compile failure); calling _prepare_qkv_for_gated_delta_rule directly
         # would re-trigger that compile failure.
-        _saved_cp = self.cp_size
-        self.cp_size = 1
-        try:
-            with torch._dynamo.config.patch(disable=True):
-                query, key, value, gate, beta, alpha = self._prepare_qkv_for_gated_delta_rule(
-                    qkv, gate, beta, alpha, batch, seq_len
-                )
-        finally:
-            self.cp_size = _saved_cp
+        with torch._dynamo.config.patch(disable=True):
+            query, key, value, gate, beta, alpha = self._prepare_qkv_for_gated_delta_rule(
+                qkv, gate, beta, alpha, batch, seq_len, cp_size_headwise=1
+            )
 
         # g/beta from the full (un-CP-sliced) A_log / dt_bias.
         g, beta = self._compute_g_and_beta(self.A_log, self.dt_bias, alpha, beta)
@@ -1137,8 +1132,13 @@ def train_one_step(
             # bypasses that main head entirely while preserving the preceding
             # MTP head calls that build the auxiliary-loss autograd graph.
             if should_bypass_main_output_layer(args):
+                # The chunked-MTP patch runs the MTP heads via the class-level
+                # forward, bypassing _passthrough, so MTP consumes ZERO intercepted
+                # calls. This gate MUST match _chunked_mtp_enabled() in that patch.
+                mtp_enabled = getattr(args, "enable_mtp_training", False)
+                chunked_mtp_on = mtp_enabled and getattr(args, "sft_chunked_logits", False)
                 mtp_output_layer_calls = (
-                    int(getattr(args, "mtp_num_layers", 0) or 0) if getattr(args, "enable_mtp_training", False) else 0
+                    0 if chunked_mtp_on else (int(getattr(args, "mtp_num_layers", 0) or 0) if mtp_enabled else 0)
                 )
                 with _bypass_output_layer(
                     model,
@@ -1478,19 +1478,39 @@ def train(
                 config.param_sync_func = param_sync_func
                 pre_hook_enabled = True
 
+        mtp_losses = None
+        mtp_loss_per_depth: list[float] = []
         if args.enable_mtp_training:
             from megatron.core.transformer.multi_token_prediction import MTPLossLoggingHelper
 
             mtp_loss_scale = 1 / num_microbatches[step_id]
             tracker = MTPLossLoggingHelper.tracker
-            if "values" in tracker:
+            # mcore >= 0.19 renamed the tracker payload: the per-microbatch
+            # accumulator is now "loss_sums" (plus "num_tokens" in per-token mode)
+            # instead of "values", and the cross-rank reduction moved into
+            # MTPLossLoggingHelper.reduce_loss_in_tracker(), which repopulates
+            # "values" and handles both normalization modes. Older mcore exposes
+            # "values" directly with no such helper, so reduce by hand there.
+            # Mirrors upstream MTPLossLoggingHelper.track_mtp_metrics.
+            mtp_losses = None
+            reduce_in_tracker = getattr(MTPLossLoggingHelper, "reduce_loss_in_tracker", None)
+            if reduce_in_tracker is not None:
+                reduce_in_tracker()
+            elif "values" in tracker:
                 values = tracker["values"]
                 if tracker.get("reduce_group") is not None:
                     torch.distributed.all_reduce(values, group=tracker.get("reduce_group"))
                 if tracker.get("avg_group") is not None:
                     torch.distributed.all_reduce(values, group=tracker["avg_group"], op=torch.distributed.ReduceOp.AVG)
-                # here we assume only one mtp layer
-                mtp_losses = (tracker["values"] * mtp_loss_scale).item()
+            # "values" is the reduced payload on both old and new mcore;
+            # "loss_values" is the compatibility slot used by older helpers.
+            mtp_values = tracker.get("values")
+            if mtp_values is None:
+                mtp_values = tracker.get("loss_values")
+            if mtp_values is not None:
+                scaled = mtp_values * mtp_loss_scale
+                mtp_loss_per_depth = scaled.flatten().tolist()
+                mtp_losses = sum(mtp_loss_per_depth)
                 MTPLossLoggingHelper.clean_loss_in_tracker()
 
                 # CI check: verify MTP loss is within expected bounds
@@ -1516,8 +1536,12 @@ def train(
             log_dict[f"train/{role_tag}grad_norm"] = (
                 grad_norm.item() if isinstance(grad_norm, torch.Tensor) else grad_norm
             )
-            if args.enable_mtp_training:
+            if args.enable_mtp_training and mtp_losses is not None:
                 log_dict[f"train/{role_tag}mtp_loss"] = mtp_losses
+                # Per-depth losses when >1 MTP depth.
+                if len(mtp_loss_per_depth) > 1:
+                    for _i, _v in enumerate(mtp_loss_per_depth, start=1):
+                        log_dict[f"train/{role_tag}mtp_{_i}_loss"] = _v
             log_dict[f"train/{role_tag}global_batch_size"] = global_batch_sizes[step_id]
 
             for param_group_id, param_group in enumerate(optimizer.param_groups):
@@ -1576,7 +1600,12 @@ def train(
 
 
 def save(
-    iteration: int, model: Sequence[DDP], optimizer: MegatronOptimizer, opt_param_scheduler: OptimizerParamScheduler
+    iteration: int,
+    model: Sequence[DDP],
+    optimizer: MegatronOptimizer,
+    opt_param_scheduler: OptimizerParamScheduler,
+    *,
+    lora_only: bool = False,
 ) -> None:
     """Persist a training checkpoint safely with forward hooks disabled.
 
@@ -1598,10 +1627,13 @@ def save(
         checkpointing_context=None,
         train_data_iterator=None,
         preprocess_common_state_dict_fn=None,
+        lora_only=lora_only,
     )
-    if is_lora_enabled(args):
-        checkpoint_dir = Path(args.save) / f"iter_{iteration:07d}"
-        _save_lora_to_checkpoint(model, str(checkpoint_dir), args)
+    # The native Megatron checkpoint above already contains the LoRA parameters
+    # and is the resume artifact. Do not additionally gather a portable HF adapter
+    # here: for large MoE LoRA runs the world-size ``gather_object`` retains every
+    # rank's adapter copy on rank 0 (>1.4 TiB host RAM on the 128-rank Qwen3.5-397B
+    # run). Portable adapters are still written by ``save_hf_model`` under --save-hf.
     if should_disable_forward_pre_hook(args):
         enable_forward_pre_hook(model)
 
@@ -1634,6 +1666,66 @@ def _install_streaming_fp8_writer(bridge, strategy, block_size):
         source.save_generator = original_save_generator
 
     return writer, restore
+
+
+def _reference_vision_tensors(reference_hf_dir, key_to_filename_map):
+    """Yield ``(key, tensor)`` for every vision weight the reference declares.
+
+    Rank-gated because only rank 0 writes; the rest just drain the generator.
+    """
+    if torch.distributed.is_initialized() and torch.distributed.get_rank(group=torch.distributed.group.WORLD) != 0:
+        return
+
+    import safetensors
+
+    by_file: dict[str, list[str]] = {}
+    for key in sorted(key_to_filename_map):
+        if "vision" in key.lower():
+            by_file.setdefault(key_to_filename_map[key], []).append(key)
+
+    count = 0
+    for filename, keys in sorted(by_file.items()):
+        with safetensors.safe_open(os.path.join(reference_hf_dir, filename), framework="pt", device="cpu") as handle:
+            for key in keys:
+                yield key, handle.get_tensor(key)
+                count += 1
+    logger.info(f"Supplemented {count} vision tensor(s) from {reference_hf_dir}")
+
+
+def _install_vision_supplement(bridge, reference_hf_dir):
+    """Chain the reference's vision weights onto the export generator.
+
+    Bridge shards from the source index, so completing the group there is what
+    makes the export come out shaped like the reference. Returns a restore
+    callable the caller MUST run in a finally block, or None if there is no
+    safetensors source to copy from.
+    """
+    hf_pretrained = getattr(bridge, "hf_pretrained", None)
+    state = getattr(hf_pretrained, "state", None)
+    source = getattr(state, "source", None)
+    if source is None or not hasattr(source, "key_to_filename_map"):
+        logger.warning(
+            "Cannot supplement vision weights: --hf-checkpoint is not a safetensors-backed HF directory. "
+            "The export will be missing them."
+        )
+        return None
+
+    original_save_generator = source.save_generator
+
+    def save_generator(generator, *args, **kwargs):
+        # *args/**kwargs so Bridge can add keyword arguments without breaking us.
+        return original_save_generator(
+            itertools.chain(generator, _reference_vision_tensors(reference_hf_dir, source.key_to_filename_map)),
+            *args,
+            **kwargs,
+        )
+
+    source.save_generator = save_generator
+
+    def restore() -> None:
+        source.save_generator = original_save_generator
+
+    return restore
 
 
 def _apply_fp8_quantization_config(config_path, strategy, block_size, modules_to_not_convert):
@@ -1731,10 +1823,9 @@ def save_hf_model(args, rollout_id: int, model: Sequence[DDP], *, force_sync: bo
         # strict=True fails whenever the reference declares weights this model structurally
         # never emits: Bridge refuses every shard holding such a key, losing the real
         # tensors that shared it (measured on gemma-4-26B text-mode SFT: 58 of 657
-        # language tensors written). Relax for exactly those cases -- an MTP base trained
-        # without MTP, or a VL base trained text-only, where only the VL providers declare
-        # vision_config. Keep strict=True everywhere else: it is the only export-time
-        # guard against a mapping bug silently truncating the checkpoint.
+        # language tensors written). Relax only where that is still true after the vision
+        # supplement below. It is the only export-time guard against a mapping bug
+        # silently truncating the checkpoint.
         from relax.utils.hf_export import (
             reconcile_hf_export_index,
             reference_expects_mtp,
@@ -1744,24 +1835,30 @@ def save_hf_model(args, rollout_id: int, model: Sequence[DDP], *, force_sync: bo
         model_has_mtp = bool(getattr(args, "mtp_num_layers", 0))
         allow_missing_mtp_keys = reference_expects_mtp(args.hf_checkpoint) and not model_has_mtp
         # Short-circuits: a reference without vision weights can never be missing them.
-        allow_missing_vision_keys = reference_expects_vision(args.hf_checkpoint) and not hasattr(
+        vision_absent_from_model = reference_expects_vision(args.hf_checkpoint) and not hasattr(
             get_model_config(model[0]), "vision_config"
         )
-
-        strict = not (allow_missing_mtp_keys or allow_missing_vision_keys)
 
         save_fp8 = getattr(args, "save_hf_dtype", "bf16") == "fp8"
         fp8_writer = None
         restore_save_generator = None
+        supplementing_vision = False
         if save_fp8:
             fp8_writer, restore_save_generator = _install_streaming_fp8_writer(
                 bridge,
                 args.save_hf_fp8_quant_mode,
                 args.save_hf_fp8_block_size,
             )
-            # StreamingFP8Writer strict-checks against the source index and cannot express
-            # an absent group. Redundant above, kept so the constraint survives edits.
-            strict = strict and not (allow_missing_mtp_keys or allow_missing_vision_keys)
+        elif vision_absent_from_model:
+            # elif: the reference tower is BF16, so under FP8 it would be neither
+            # quantized nor listed in modules_to_not_convert, and a loader would
+            # decode it as FP8.
+            restore_save_generator = _install_vision_supplement(bridge, args.hf_checkpoint)
+            supplementing_vision = restore_save_generator is not None
+
+        # Relax only for a group that really will end up absent.
+        allow_missing_vision_keys = vision_absent_from_model and not supplementing_vision
+        strict = not (allow_missing_mtp_keys or allow_missing_vision_keys)
 
         try:
             with patch_megatron_model(model):
@@ -1777,9 +1874,10 @@ def save_hf_model(args, rollout_id: int, model: Sequence[DDP], *, force_sync: bo
         # A non-strict save can leave "ghost" index entries: keys Bridge listed but wrote
         # to no shard (seen for mtp.*, not for vision -- but this is a no-op when there is
         # nothing to fix, so gate on both relaxations). Rebuilds the index from what was
-        # written and supplements MTP from the base so the checkpoint stays deployable;
-        # vision is left out, a text-only export stays text-only. Bridge writes on WORLD
-        # rank 0, so reconcile there. FP8 has its own streaming index and is skipped.
+        # written and supplements MTP from the base so the checkpoint stays deployable.
+        # Vision is not supplemented here -- it goes in through the generator above, or
+        # not at all. Bridge writes on WORLD rank 0, so reconcile there. FP8 has its own
+        # streaming index and is skipped.
         is_export_writer = (
             not torch.distributed.is_initialized()
             or torch.distributed.get_rank(group=torch.distributed.group.WORLD) == 0
@@ -1807,6 +1905,7 @@ def save_hf_model(args, rollout_id: int, model: Sequence[DDP], *, force_sync: bo
     except Exception as e:
         if should_log:
             logger.error(f"Failed to save HuggingFace format: {e}")
+        raise
 
 
 def initialize_model_and_optimizer(

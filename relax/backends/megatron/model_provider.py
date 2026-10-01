@@ -26,11 +26,13 @@ from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.training.arguments import core_transformer_config_from_args
 
 from relax.utils.device import is_npu_available, make_current_torch_device
+from relax.utils.env import Envs
 from relax.utils.logging_utils import get_logger
 from relax.utils.megatron_peft_utils import (
     _lora_module_key,
     build_lora_peft,
     count_adapter_parameters,
+    exclude_frozen_lora_target_modules,
     install_gdn_gate_mask_hooks,
     is_lora_adapter_mode,
     is_lora_adapter_param,
@@ -46,6 +48,7 @@ from relax.utils.training.ppo_utils import (
     install_sequence_classification_head_in_provider,
 )
 
+from .arguments import _validate_linear_cp_mode
 from .conditional_branch_sync import install_conditional_branch_sync
 
 
@@ -114,6 +117,41 @@ def _dump_provider_config(provider: Any, save_path: str) -> None:
 # context parallelism actually splits the sequence dimension at the attention input.
 # Compare seq_len across CP=1 vs CP=2 runs — it must halve.  Remove after verifying.
 _CP_PROBE_INSTALLED = False
+
+
+def _patch_bridge_vision_cp_all_gather(bridge_model_module: Any, all_gather_vision_embeddings: Any) -> bool:
+    """Make Bridge's Qwen3-VL CP vision all-gather accept keyword arguments.
+
+    The Bridge Qwen3-VL forward currently calls ``autograd.Function.apply``
+    with ``cp_group=...``.  PyTorch only accepts positional arguments for
+    ``apply``, so the vision CP path fails before the first forward.  Keep the
+    autograd function unchanged and adapt only its call surface in the Bridge
+    model module.
+    """
+    if getattr(bridge_model_module, "AllGatherVisionEmbeddings", None) is not all_gather_vision_embeddings:
+        return False
+
+    class _AllGatherVisionEmbeddingsCompat:
+        @staticmethod
+        def apply(input, seqlens_on_cp_ranks, cp_group=None):
+            return all_gather_vision_embeddings.apply(input, seqlens_on_cp_ranks, cp_group)
+
+    bridge_model_module.AllGatherVisionEmbeddings = _AllGatherVisionEmbeddingsCompat
+    return True
+
+
+def _install_bridge_vision_cp_all_gather_compat() -> None:
+    """Install the Qwen3-VL Bridge compatibility patch when that model is
+    present."""
+    try:
+        from megatron.bridge.models.qwen_vl.modelling_qwen3_vl import model as bridge_qwen3_vl_model
+        from megatron.bridge.models.qwen_vl.modelling_qwen3_vl.utils import AllGatherVisionEmbeddings
+    except ImportError:
+        return
+
+    if _patch_bridge_vision_cp_all_gather(bridge_qwen3_vl_model, AllGatherVisionEmbeddings):
+        if not dist.is_initialized() or dist.get_rank() == 0:
+            logger.info("Patched Bridge Qwen3-VL vision CP all-gather for PyTorch autograd.apply compatibility.")
 
 
 def _maybe_mark_unsplit_forward(args: argparse.Namespace, model: torch.nn.Module) -> None:
@@ -226,6 +264,9 @@ def get_model_provider_func(
                 model = custom_model_provider(pre_process=pre_process, post_process=post_process, vp_stage=vp_stage)
             else:
                 model = custom_model_provider(pre_process=pre_process, post_process=post_process)
+            for module in model.modules():
+                if getattr(module, "config", None) is not None:
+                    _validate_linear_cp_mode(args, module.config)
             configure_mtp_detach_paths(args, model)
             # Apply critic output layer if needed
             install_critic_value_head_in_provider(model, role, post_process)
@@ -252,6 +293,7 @@ def get_model_provider_func(
             "pipeline_model_parallel_size",
             "virtual_pipeline_model_parallel_size",
             "context_parallel_size",
+            "linear_cp_mode",
             "expert_model_parallel_size",
             "expert_tensor_parallel_size",
             "variable_seq_lengths",
@@ -264,6 +306,7 @@ def get_model_provider_func(
             "recompute_granularity",
             "recompute_method",
             "recompute_num_layers",
+            "recompute_modules",
             "distribute_saved_activations",
             "moe_router_load_balancing_type",
             "moe_router_dtype",
@@ -286,6 +329,11 @@ def get_model_provider_func(
             "cross_entropy_fusion_impl",
             "mtp_num_layers",
             "mtp_loss_scaling_factor",
+            # Reuse one physical MTP layer across all mtp_num_layers depths. Must
+            # be copied onto the bridge provider or it stays at the default (False)
+            # even when --mtp-use-repeated-layer is passed, so the model builds N
+            # physical layers (layers.1/2 unloaded/random).
+            "mtp_use_repeated_layer",
             # "position_embedding_type", # Use default values of megatron-bridge, no need to pass
             # Allow CLI to override layer count / MoE frequency for layer-reduced training
             "num_layers",
@@ -329,6 +377,21 @@ def get_model_provider_func(
                     logger.info(f"Override provider.{attr}: {old_val!r} -> {new_val!r}")
                 setattr(provider, attr, new_val)
 
+        # Megatron-Bridge Qwen3.5-VL consumes ``vision_dp_when_cp`` to shard
+        # the vision encoder input before its CP all-gather.  Relax's public
+        # CLI predates that Bridge rename and exposes ``vision_dp_when_tp``.
+        # Without this compatibility mapping the parsed flag is silently
+        # ignored, so every CP rank repeats the full vision forward.
+        if getattr(args, "vision_dp_when_tp", False) and hasattr(provider, "vision_dp_when_cp"):
+            if not provider.vision_dp_when_cp:
+                logger.info(
+                    "Mapping --vision-dp-when-tp to provider.vision_dp_when_cp for Qwen3.5-VL vision sharding."
+                )
+            provider.vision_dp_when_cp = True
+
+        if getattr(provider, "vision_dp_when_cp", False):
+            _install_bridge_vision_cp_all_gather_compat()
+
         # Handle name-mismatched attributes that require explicit mapping
         if getattr(args, "decoder_first_pipeline_num_layers", None) is not None:
             provider.num_layers_in_first_pipeline_stage = args.decoder_first_pipeline_num_layers
@@ -350,6 +413,7 @@ def get_model_provider_func(
             provider.bf16 = True
             provider.params_dtype = torch.bfloat16
 
+        _validate_linear_cp_mode(args, provider)
         provider.finalize()
 
         # Pickle provider for offline inspection / reproducibility (only on rank 0)
@@ -398,6 +462,7 @@ def get_model_provider_func(
 
         # Experimental loading arguments from yaml
         config: TransformerConfig = core_transformer_config_from_args(args)
+        _validate_linear_cp_mode(args, config)
 
         if args.spec is not None:
             transformer_layer_spec = import_module(args.spec)
@@ -550,6 +615,10 @@ def wrap_model_provider_with_lora(original_provider, args):
             scope = getattr(args, "lora_scope", "all")
             if scope != "all":
                 peft.target_modules = scope_target_modules_to_region(model, list(args.lora_target_modules), scope)
+            if Envs.RELAX_LORA_EXCLUDE_FROZEN_MODULES and getattr(args, "freeze_params_name_list", None):
+                peft.target_modules = exclude_frozen_lora_target_modules(
+                    model, list(peft.target_modules), args.freeze_params_name_list
+                )
             model = peft(model, training=True)
             ensure_sequence_classification_head_trainable(model, args, "actor", post_process)
             gdn_gate_masked = install_gdn_gate_mask_hooks(model) if is_lora_adapter_mode(args) else 0

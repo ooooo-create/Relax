@@ -7,10 +7,18 @@ from collections import OrderedDict
 
 import torch
 import torch.distributed as dist
-from megatron.bridge.peft.lora import LoRAMerge
 from megatron.core import mpu
 
+
+try:
+    # Megatron-Bridge >= 0.6.0 moved LoRAMerge out of peft.lora into its own module.
+    from megatron.bridge.peft.lora_merge import LoRAMerge
+except ImportError:  # bridge <= 0.5.x
+    from megatron.bridge.peft.lora import LoRAMerge
+
+
 from relax.utils import device as device_utils
+from relax.utils.device import device_module
 from relax.utils.logging_utils import get_logger
 from relax.utils.megatron_peft_utils import (
     is_lora_adapter_mode,
@@ -363,7 +371,7 @@ def _load_to_gpu(bucket_infos, megatron_local_weights, vanilla_key_map, device, 
         if merge_fn is not None and rank == info.src_rank:
             param = merge_fn(info, param, megatron_local_weights, device)
         params.append(param)
-    device_utils.synchronize()
+    device_module.synchronize()
     return params
 
 

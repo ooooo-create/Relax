@@ -49,6 +49,7 @@ def _install_fake_megatron(monkeypatch, provider=None):
 
     megatron = types.ModuleType("megatron")
     core = types.ModuleType("megatron.core")
+    optimizer = types.ModuleType("megatron.core.optimizer")
     mpu = types.ModuleType("megatron.core.mpu")
     tensor_parallel = types.ModuleType("megatron.core.tensor_parallel")
     models = types.ModuleType("megatron.core.models")
@@ -59,6 +60,8 @@ def _install_fake_megatron(monkeypatch, provider=None):
     transformer_config = types.ModuleType("megatron.core.transformer.transformer_config")
     training = types.ModuleType("megatron.training")
     arguments = types.ModuleType("megatron.training.arguments")
+    tokenizer_package = types.ModuleType("megatron.training.tokenizer")
+    tokenizer = types.ModuleType("megatron.training.tokenizer.tokenizer")
     bridge = types.ModuleType("megatron.bridge")
     misc = types.ModuleType("relax.utils.misc")
 
@@ -83,6 +86,7 @@ def _install_fake_megatron(monkeypatch, provider=None):
     mpu.get_tensor_model_parallel_rank = lambda: 0
     core.mpu = mpu
     core.tensor_parallel = tensor_parallel
+    optimizer.OptimizerConfig = SimpleNamespace
     gpt.GPTModel = _FakeGPTModel
     gpt_layer_specs.get_gpt_decoder_block_spec = lambda *args, **kwargs: object()
     gpt_layer_specs.get_gpt_layer_local_spec = lambda *args, **kwargs: object()
@@ -90,12 +94,16 @@ def _install_fake_megatron(monkeypatch, provider=None):
     spec_utils.import_module = lambda path: object()
     transformer_config.TransformerConfig = _FakeTransformerConfig
     arguments.core_transformer_config_from_args = lambda args: _FakeTransformerConfig()
+    arguments.parse_args = lambda *args, **kwargs: None
+    arguments.validate_args = lambda *args, **kwargs: None
+    tokenizer._vocab_size_with_padding = lambda *args, **kwargs: None
     bridge.AutoBridge = _FakeAutoBridge
     misc.load_function = lambda path: None
 
     modules = {
         "megatron": megatron,
         "megatron.core": core,
+        "megatron.core.optimizer": optimizer,
         "megatron.core.mpu": mpu,
         "megatron.core.tensor_parallel": tensor_parallel,
         "megatron.core.models": models,
@@ -106,6 +114,8 @@ def _install_fake_megatron(monkeypatch, provider=None):
         "megatron.core.transformer.transformer_config": transformer_config,
         "megatron.training": training,
         "megatron.training.arguments": arguments,
+        "megatron.training.tokenizer": tokenizer_package,
+        "megatron.training.tokenizer.tokenizer": tokenizer,
         "megatron.bridge": bridge,
         "relax.utils.misc": misc,
     }
@@ -190,6 +200,33 @@ def test_bridge_provider_receives_vision_dp_when_cp(monkeypatch):
     model_provider(pre_process=True, post_process=True)
 
     assert provider.vision_dp_when_cp is True
+
+
+def test_bridge_provider_maps_legacy_vision_dp_when_tp_to_cp(monkeypatch):
+    module, provider = _load_model_provider(monkeypatch)
+
+    model_provider = module.get_model_provider_func(_bridge_args(vision_dp_when_tp=True), role="actor")
+    model_provider(pre_process=True, post_process=True)
+
+    assert provider.vision_dp_when_cp is True
+
+
+def test_bridge_vision_cp_all_gather_compat_forwards_cp_group_positionally(monkeypatch):
+    class _OriginalAllGatherVisionEmbeddings:
+        calls = []
+
+        @staticmethod
+        def apply(*args):
+            _OriginalAllGatherVisionEmbeddings.calls.append(args)
+            return "gathered"
+
+    bridge_model_module = SimpleNamespace(AllGatherVisionEmbeddings=_OriginalAllGatherVisionEmbeddings)
+    module, _ = _load_model_provider(monkeypatch)
+
+    assert module._patch_bridge_vision_cp_all_gather(bridge_model_module, _OriginalAllGatherVisionEmbeddings)
+    assert bridge_model_module.AllGatherVisionEmbeddings.apply("input", "seqlens", cp_group="cp") == "gathered"
+    assert _OriginalAllGatherVisionEmbeddings.calls == [("input", "seqlens", "cp")]
+    assert not module._patch_bridge_vision_cp_all_gather(bridge_model_module, _OriginalAllGatherVisionEmbeddings)
 
 
 def test_bridge_critic_provider_registers_value_head_before_ddp(monkeypatch):
