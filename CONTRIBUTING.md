@@ -92,11 +92,11 @@ feat(rollout): add streaming data consumption for async mode
 
 ### Before Submitting
 
-- [ ] Relevant tests pass locally
-- [ ] Git hooks pass and code is formatted
+- [ ] Code compiles and runs without errors
+- [ ] `pre-commit run --all-files` passes
+- [ ] Tests pass (`pytest tests/`)
 - [ ] Documentation updated (if applicable)
 - [ ] Commit messages follow Conventional Commits
-- [ ] Branch is up to date with `main`
 
 ### PR Review
 
